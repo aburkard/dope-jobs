@@ -1,0 +1,46 @@
+careers.jobscore.com
+https://support.jobscore.com/hc/en-us/articles/202001320-Developers-Guide-to-Job-Feed-APIs
+https://careers.jobscore.com/jobs/onecommonunity/feed.json
+Need to use https://github.com/Anorov/cloudflare-scrape to be cloudflare
+Headless selenium is also an option
+
+jobs.smartrecruiters.com
+https://developers.smartrecruiters.com/docs/endpoints
+https://api.smartrecruiters.com/v1/companies/Renaissance/postings
+Note that it's paginated
+
+
+taleo.net
+
+
+icims.com
+https://careers.7-eleven.com/api/jobs?page=1&sortBy=relevance&descending=false&internal=false
+https://careers-7-eleven.icims.com/api/jobs?page=1&sortBy=relevance&descending=false&internal=false
+paginated
+requires stealth user agent
+
+
+breezy.hr
+
+
+applytojob.com
+XML Feed: https://app.jazz.co/feeds/export/jobs/crunchfitness
+
+comeet.com
+I don't think this is an ats. Their  customers use other ATS's
+
+bamboohr.com
+
+
+catsone.com
+
+
+careers.recruitee.com
+
+
+app.dover.io
+https://app.dover.io/api/v1/careers-page/14ff6558-7139-4189-9683-2cdbef22bdac/jobs?limit=100&offset=0
+https://app.dover.io/api/v1/jobs/3ae53884-1d50-4d33-8e58-0e8205ae1c33/get_job_description
+https://app.dover.io/Joon
+
+myworkdayjobs
