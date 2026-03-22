@@ -34,13 +34,31 @@ def extract_greenhouse(token: str) -> dict:
             return info
         soup = BeautifulSoup(r.text, "lxml")
 
-        # Logo: look for img with "logo" in alt text or in the greenhouse CDN logo path
+        # Logo: prioritized search
+        # 1. Greenhouse CDN logo path (highest quality)
+        # 2. img with "logo" in alt text
+        # 3. img with "logo" in src URL
+        # 4. First img in a header/banner area
+        logo_candidates = []
         for img in soup.find_all("img"):
             src = img.get("src", "")
             alt = img.get("alt", "").lower()
-            if "logo" in alt or "/logos/" in src:
-                info["logo_url"] = src
-                break
+            if not src or src.startswith("data:"):
+                continue
+            if "/logos/" in src:
+                logo_candidates.insert(0, src)  # CDN logos first
+            elif "logo" in alt:
+                logo_candidates.insert(0 if not logo_candidates else 1, src)
+            elif "logo" in src.lower():
+                logo_candidates.append(src)
+            elif "brand" in alt or "brand" in src.lower():
+                logo_candidates.append(src)
+        # Also check for og:image meta tag
+        og = soup.find("meta", property="og:image")
+        if og and og.get("content"):
+            logo_candidates.append(og["content"])
+        if logo_candidates:
+            info["logo_url"] = logo_candidates[0]
 
         # Domain: find external links, pick the most common domain
         domains = {}
@@ -79,20 +97,29 @@ def extract_lever(token: str) -> dict:
             return info
         soup = BeautifulSoup(r.text, "lxml")
 
-        # Logo: usually in the header as an img
+        # Logo: search in multiple places
+        logo_candidates = []
         for img in soup.find_all("img"):
             src = img.get("src", "")
             alt = img.get("alt", "").lower()
+            if not src or src.startswith("data:"):
+                continue
             if "logo" in alt or "logo" in src.lower():
-                info["logo_url"] = src
-                break
-        # Fallback: first img in the page header
-        if "logo_url" not in info:
-            header = soup.find("div", class_="main-header-logo")
-            if header:
-                img = header.find("img")
-                if img and img.get("src"):
-                    info["logo_url"] = img["src"]
+                logo_candidates.insert(0, src)
+            elif "brand" in alt:
+                logo_candidates.append(src)
+        # Check header area
+        header = soup.find("div", class_="main-header-logo")
+        if header:
+            img = header.find("img")
+            if img and img.get("src"):
+                logo_candidates.insert(0, img["src"])
+        # og:image fallback
+        og = soup.find("meta", property="og:image")
+        if og and og.get("content"):
+            logo_candidates.append(og["content"])
+        if logo_candidates:
+            info["logo_url"] = logo_candidates[0]
 
         # Domain: look in footer links or any external link
         domains = {}
