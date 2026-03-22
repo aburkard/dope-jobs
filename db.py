@@ -93,10 +93,11 @@ def upsert_scraped_jobs(conn, scraped_jobs: list[dict]) -> dict:
       - new: list of raw jobs that are new
       - changed: list of raw jobs whose content changed
       - unchanged: count of jobs that didn't change
-      - removed: count of jobs marked as removed
+      - needs_detail_fetch: list of raw jobs that need per-job API call
+        (new jobs, or jobs whose source updated_at > our last_seen_at)
     """
     if not scraped_jobs:
-        return {"new": [], "changed": [], "unchanged": 0, "removed": 0}
+        return {"new": [], "changed": [], "unchanged": 0, "needs_detail_fetch": []}
 
     now = datetime.now(timezone.utc)
 
@@ -110,23 +111,25 @@ def upsert_scraped_jobs(conn, scraped_jobs: list[dict]) -> dict:
         title = raw.get("title", "")
         job_data.append((jid, ats, board, title, h, raw))
 
-    # Fetch existing hashes from DB
+    # Fetch existing hashes + last_seen_at from DB
     ids = [jd[0] for jd in job_data]
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT id, content_hash FROM pipeline_jobs WHERE id = ANY(%s)",
+            "SELECT id, content_hash, last_seen_at FROM pipeline_jobs WHERE id = ANY(%s)",
             (ids,)
         )
-        existing = {row[0]: row[1] for row in cur.fetchall()}
+        existing = {row[0]: {"hash": row[1], "last_seen_at": row[2]} for row in cur.fetchall()}
 
     new_jobs = []
     changed_jobs = []
+    needs_detail = []
     unchanged = 0
 
     for jid, ats, board, title, h, raw in job_data:
         if jid not in existing:
-            # New job
+            # New job — always needs detail fetch
             new_jobs.append(raw)
+            needs_detail.append(raw)
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO pipeline_jobs (id, ats, board_token, title, content_hash, first_seen_at, last_seen_at, needs_parse, raw_json)
@@ -138,9 +141,10 @@ def upsert_scraped_jobs(conn, scraped_jobs: list[dict]) -> dict:
                         removed_at = NULL,
                         raw_json = EXCLUDED.raw_json
                 """, (jid, ats, board, title, h, now, now, Json(raw)))
-        elif existing[jid] != h:
-            # Content changed
+        elif existing[jid]["hash"] != h:
+            # Content changed — needs detail fetch
             changed_jobs.append(raw)
+            needs_detail.append(raw)
             with conn.cursor() as cur:
                 cur.execute("""
                     UPDATE pipeline_jobs SET
@@ -153,8 +157,21 @@ def upsert_scraped_jobs(conn, scraped_jobs: list[dict]) -> dict:
                     WHERE id = %s
                 """, (h, title, now, Json(raw), jid))
         else:
-            # Unchanged
+            # Content unchanged — but check if source updated since our last scrape
             unchanged += 1
+            source_updated = raw.get("updated_at")
+            last_seen = existing[jid]["last_seen_at"]
+            if source_updated and last_seen:
+                from dateutil.parser import parse as parse_date
+                try:
+                    source_dt = parse_date(source_updated)
+                    if source_dt.tzinfo is None:
+                        source_dt = source_dt.replace(tzinfo=timezone.utc)
+                    if source_dt > last_seen:
+                        needs_detail.append(raw)
+                except (ValueError, TypeError):
+                    pass
+
             with conn.cursor() as cur:
                 cur.execute(
                     "UPDATE pipeline_jobs SET last_seen_at = %s, removed_at = NULL WHERE id = %s",
@@ -162,7 +179,7 @@ def upsert_scraped_jobs(conn, scraped_jobs: list[dict]) -> dict:
                 )
 
     conn.commit()
-    return {"new": new_jobs, "changed": changed_jobs, "unchanged": unchanged, "removed": 0}
+    return {"new": new_jobs, "changed": changed_jobs, "unchanged": unchanged, "needs_detail_fetch": needs_detail}
 
 
 def mark_removed(conn, ats: str, board_token: str, seen_ids: set[str]) -> int:

@@ -42,6 +42,14 @@ class GreenhouseScraper(BaseScraper):
         response = self.session.get(url, timeout=5)
         return response.json()
 
+    def fetch_job_pay(self, job_id):
+        """Fetch pay transparency data for a single job."""
+        url = f"{self.base_url}/{self.board_token}/jobs/{job_id}"
+        response = self.session.get(url, params={"pay_transparency": "true"}, timeout=5)
+        if response.ok:
+            return response.json().get("pay_input_ranges", [])
+        return []
+
     def normalize_job(self, job):
         # Extract structured department/office data
         departments = job.get('departments', [])

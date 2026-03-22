@@ -81,6 +81,29 @@ def step_scrape(conn, companies: list[tuple[str, str]], max_per_company: int = 5
             n_new = len(result["new"])
             n_changed = len(result["changed"])
             n_unchanged = result["unchanged"]
+            needs_detail = result.get("needs_detail_fetch", [])
+
+            # Fetch per-job detail data for jobs that need it (e.g. Greenhouse pay transparency)
+            n_detail = 0
+            if ats == "greenhouse" and needs_detail:
+                for raw in needs_detail:
+                    raw_id = str(raw.get("id", "")).split("__")[-1]
+                    try:
+                        pay_ranges = scraper.fetch_job_pay(raw_id)
+                        if pay_ranges:
+                            # Update raw_json in DB with pay data
+                            jid = job_id(raw)
+                            with conn.cursor() as cur:
+                                cur.execute("""
+                                    UPDATE pipeline_jobs
+                                    SET raw_json = raw_json || %s::jsonb
+                                    WHERE id = %s
+                                """, (Json({"pay_input_ranges": pay_ranges}), jid))
+                            n_detail += 1
+                    except Exception:
+                        pass
+                    time.sleep(0.1)
+                conn.commit()
 
             # Mark jobs not seen in this scrape as removed
             seen_ids = {job_id(j) for j in jobs}
@@ -99,6 +122,7 @@ def step_scrape(conn, companies: list[tuple[str, str]], max_per_company: int = 5
             if n_changed: status_parts.append(f"{n_changed} changed")
             if n_unchanged: status_parts.append(f"{n_unchanged} unchanged")
             if n_removed: status_parts.append(f"{n_removed} removed")
+            if n_detail: status_parts.append(f"{n_detail} pay fetched")
             status = ", ".join(status_parts) or "empty"
             print(f"  {ats}:{token} — {len(all_jobs)} total → {status}")
 

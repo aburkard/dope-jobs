@@ -662,6 +662,16 @@ def prepare_job_text(raw_job: dict, max_chars: int = 8000) -> str:
         office_names = [o.get("location") or o.get("name", "") for o in raw_job["offices"]]
         if office_names:
             meta_parts.append(f"Offices: {', '.join(office_names)}")
+    if raw_job.get("pay_input_ranges"):
+        for pay in raw_job["pay_input_ranges"]:
+            min_val = pay.get("min_cents", 0) / 100 if pay.get("min_cents") else None
+            max_val = pay.get("max_cents", 0) / 100 if pay.get("max_cents") else None
+            currency = pay.get("currency_type", "USD")
+            title = pay.get("title", "Pay")
+            if min_val and max_val:
+                meta_parts.append(f"{title} ${min_val:,.0f} - ${max_val:,.0f} {currency}")
+            elif min_val:
+                meta_parts.append(f"{title} ${min_val:,.0f}+ {currency}")
     # Lever structured fields
     if raw_job.get("commitment"):
         meta_parts.append(f"Commitment: {raw_job['commitment']}")
