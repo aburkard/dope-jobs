@@ -1,6 +1,5 @@
 import datetime
 import html2text
-from bs4 import BeautifulSoup
 
 from .base_scraper import BaseScraper
 import utils
@@ -13,7 +12,9 @@ class AshbyScraper(BaseScraper):
     def __init__(self, board_token):
         super().__init__(board_token)
         self.ats_name = 'ashby'
-        self.base_url = 'https://jobs.ashbyhq.com/api/non-user-graphql'
+        self.api_url = f'https://api.ashbyhq.com/posting-api/job-board/{board_token}'
+        # Keep GraphQL for org-level data (logo, domain)
+        self.graphql_url = 'https://jobs.ashbyhq.com/api/non-user-graphql'
 
         h = html2text.HTML2Text()
         h.body_width = 0
@@ -22,155 +23,124 @@ class AshbyScraper(BaseScraper):
         h.ignore_emphasis = True
         self.html2text = h
 
-    # TODO: Find a more robust way to check if an Ashby job board exists
     def check_exists(self):
-        return len(
-            self.session.get(
-                f"https://jobs.ashbyhq.com/{self.board_token}").text) > 7000
+        r = self.session.get(self.api_url, timeout=10)
+        if r.ok:
+            data = r.json()
+            return len(data.get('jobs', [])) > 0
+        return False
 
     def fetch_job_board(self, force=False):
+        """Fetch org-level data (name, logo, domain) via GraphQL."""
         data = {
-            "operationName":
-            "ApiOrganizationFromHostedJobsPageName",
-            "variables": {
-                "organizationHostedJobsPageName": self.board_token
-            },
-            "query":
-            """query ApiOrganizationFromHostedJobsPageName($organizationHostedJobsPageName: String!) {
-                            organization: organizationFromHostedJobsPageName(
-                                organizationHostedJobsPageName: $organizationHostedJobsPageName
-                            ) {
-                                ...OrganizationParts
-                            }
-                            }
-
-                            fragment OrganizationParts on Organization {
-                            name
-                            publicWebsite
-                            customJobsPageUrl
-                            allowJobPostIndexing
-                            theme {
-                                colors
-                                logoWordmarkImageUrl
-                                logoSquareImageUrl
-                            }
-                            activeFeatureFlags
-                            }"""
+            "operationName": "ApiOrganizationFromHostedJobsPageName",
+            "variables": {"organizationHostedJobsPageName": self.board_token},
+            "query": """query ApiOrganizationFromHostedJobsPageName($organizationHostedJobsPageName: String!) {
+                organization: organizationFromHostedJobsPageName(
+                    organizationHostedJobsPageName: $organizationHostedJobsPageName
+                ) {
+                    name
+                    publicWebsite
+                    theme {
+                        logoSquareImageUrl
+                    }
+                }
+            }"""
         }
-
         if not hasattr(self, '_cached_job_board') or force:
-            response = self.session.post(self.base_url, json=data, timeout=5)
+            response = self.session.post(self.graphql_url, json=data, timeout=5)
             self._cached_job_board = response.json()
         return self._cached_job_board
 
-    def fetch_jobs(self, fetch_job_descriptions=True, normalize=True):
-        if normalize and not fetch_job_descriptions:
-            raise ValueError(
-                "normalize=True requires fetch_job_descriptions=True")
-        data = {
-            "operationName":
-            "ApiJobBoardWithTeams",
-            "variables": {
-                "organizationHostedJobsPageName": self.board_token
-            },
-            "query":
-            """query ApiJobBoardWithTeams($organizationHostedJobsPageName: String!) {
-                    jobBoard: jobBoardWithTeams(
-                        organizationHostedJobsPageName: $organizationHostedJobsPageName
-                    ) {
-                        jobPostings {
-                            id
-                            title
-                            teamId
-                            locationId
-                            locationName
-                            employmentType
-                            secondaryLocations {
-                                locationId
-                                locationName
-                            }
-                            compensationTierSummary
-                        }
-                    }
-                }"""
-        }
-        response = self.session.post(self.base_url, json=data, timeout=5)
-        jobs = (response.json()['data']['jobBoard']
-                or {}).get('jobPostings', [])
-        for job in jobs:
-            if fetch_job_descriptions:
-                job_data = self.fetch_job(job['id'])
-                job = {**job, **job_data}
+    def fetch_jobs(self, normalize=True):
+        """Fetch all jobs via the REST API (single request, includes descriptions)."""
+        r = self.session.get(
+            self.api_url,
+            params={'includeCompensation': 'true'},
+            timeout=30,
+        )
+        if not r.ok:
+            return
+
+        data = r.json()
+        for job in data.get('jobs', []):
             if normalize:
                 job = self.normalize_job(job)
-            jobs = self.add_default_fields(job)
+            job = self.add_default_fields(job)
             yield job
 
     def fetch_job(self, job_id):
-        data = {
-            "operationName":
-            "ApiJobPosting",
-            "variables": {
-                "organizationHostedJobsPageName": self.board_token,
-                "jobPostingId": job_id
-            },
-            "query":
-            """query ApiJobPosting($organizationHostedJobsPageName: String!, $jobPostingId: String!) {
-                            jobPosting(
-                                organizationHostedJobsPageName: $organizationHostedJobsPageName
-                                jobPostingId: $jobPostingId
-                            ) {
-                                id
-                                title
-                                departmentName
-                                locationName
-                                employmentType
-                                descriptionHtml
-                                isListed
-                                isConfidential
-                                teamNames
-                                secondaryLocationNames
-                                compensationTierSummary
-                                compensationTiers {
-                                id
-                                title
-                                tierSummary
-                                }
-                                compensationTierGuideUrl
-                                scrapeableCompensationSalarySummary
-                                compensationPhilosophyHtml
-                            }
-                        }"""
-        }
-        response = self.session.post(self.base_url, json=data, timeout=5)
-        job = response.json()['data']['jobPosting']
-        return job
+        """Fetch a single job — uses REST API and filters."""
+        r = self.session.get(
+            self.api_url,
+            params={'includeCompensation': 'true'},
+            timeout=30,
+        )
+        if not r.ok:
+            return None
+        for job in r.json().get('jobs', []):
+            if job.get('id') == job_id:
+                return self.normalize_job(job)
+        return None
 
     def normalize_job(self, job):
+        """Normalize Ashby REST API response to standard format.
+        Preserves structured fields that save LLM extraction."""
+        # Location handling
+        location = job.get('location', '')
+        address = job.get('address', {}).get('postalAddress', {})
+        secondary = job.get('secondaryLocations', [])
+
+        # Compensation
+        compensation = job.get('compensation', {})
+        comp_summary = compensation.get('compensationTierSummary', '')
+        comp_salary = compensation.get('scrapeableCompensationSalarySummary', '')
+        comp_tiers = compensation.get('compensationTiers', [])
+
         return {
-            "id": f"{self.ats_name}__{self.board_token}__{job.get('id')}",
+            "id": f"{self.ats_name}__{self.board_token}__{job.get('id', '')}",
             "board_token": self.board_token,
             "company": utils.get_company_name(self.board_token),
-            "title": job.get('title'),
-            "description": self.clean_description(job['descriptionHtml']),
-            "location": job.get('locationName'),
-            "url": f"https://jobs.ashbyhq.com/{self.board_token}/{job['id']}",
-            # "updated_at": None,
+            "title": job.get('title', ''),
+            "descriptionHtml": job.get('descriptionHtml', ''),
+            "descriptionPlain": job.get('descriptionPlain', ''),
+            "description": job.get('descriptionPlain', ''),
+            "url": job.get('jobUrl', f"https://jobs.ashbyhq.com/{self.board_token}/{job.get('id', '')}"),
+            "applyUrl": job.get('applyUrl', ''),
+
+            # Structured location data
+            "location": location,
+            "locationName": location,
+            "locationCity": address.get('addressLocality', ''),
+            "locationRegion": address.get('addressRegion', ''),
+            "locationCountry": address.get('addressCountry', ''),
+            "secondaryLocations": [
+                {
+                    "location": sl.get('location', ''),
+                    "city": sl.get('address', {}).get('postalAddress', {}).get('addressLocality', ''),
+                    "region": sl.get('address', {}).get('postalAddress', {}).get('addressRegion', ''),
+                    "country": sl.get('address', {}).get('postalAddress', {}).get('addressCountry', ''),
+                }
+                for sl in secondary
+            ],
+
+            # Structured employment data (saves LLM extraction)
+            "employmentType": job.get('employmentType', ''),  # FullTime, PartTime, Intern, Contract, Temporary
+            "workplaceType": job.get('workplaceType', ''),    # OnSite, Remote, Hybrid
+            "isRemote": job.get('isRemote', False),
+            "department": job.get('department', ''),
+            "team": job.get('team', ''),
+            "publishedAt": job.get('publishedAt', ''),
+            "isListed": job.get('isListed', True),
+
+            # Structured compensation data (saves LLM extraction)
+            "compensationTierSummary": comp_summary,
+            "compensationSalarySummary": comp_salary,
+            "compensationTiers": comp_tiers,
         }
 
     def clean_description(self, text):
         return self.html2text.handle(text).strip()
-
-    # def _fetch_html(self, force=False):
-    #     if not hasattr(self, '_cached_html') or force:
-    #         headers = self.session.headers.copy()
-    #         headers['Accept'] = None
-    #         response = self.session.get(
-    #             f"https://jobs.ashbyhq.com/{self.board_token}",
-    #             timeout=5,
-    #             headers=headers)
-    #         self._cached_html = response.text
-    #     return self._cached_html
 
     def get_company_name(self):
         data = self.fetch_job_board()

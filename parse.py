@@ -659,13 +659,33 @@ def prepare_job_text(raw_job: dict, max_chars: int = 8000) -> str:
     cats = raw_job.get("categories", {})
     if isinstance(cats, dict) and cats.get("location"):
         meta_parts.append(f"Location: {cats['location']}")
-    # Ashby fields
+    # Ashby fields (REST API provides structured data)
     if raw_job.get("locationName"):
         meta_parts.append(f"Location: {raw_job['locationName']}")
+    if raw_job.get("locationCity"):
+        loc_detail = raw_job["locationCity"]
+        if raw_job.get("locationRegion"):
+            loc_detail += f", {raw_job['locationRegion']}"
+        if raw_job.get("locationCountry"):
+            loc_detail += f", {raw_job['locationCountry']}"
+        meta_parts.append(f"Location detail: {loc_detail}")
+    if raw_job.get("secondaryLocations"):
+        locs = [sl.get("location", "") for sl in raw_job["secondaryLocations"] if sl.get("location")]
+        if locs:
+            meta_parts.append(f"Also in: {', '.join(locs)}")
+    if raw_job.get("workplaceType"):
+        meta_parts.append(f"Workplace: {raw_job['workplaceType']}")
     if raw_job.get("employmentType"):
         meta_parts.append(f"Employment type: {raw_job['employmentType']}")
     if raw_job.get("compensationTierSummary"):
         meta_parts.append(f"Compensation: {raw_job['compensationTierSummary']}")
+    if raw_job.get("compensationSalarySummary"):
+        meta_parts.append(f"Salary: {raw_job['compensationSalarySummary']}")
+    if raw_job.get("department"):
+        meta_parts.append(f"Department: {raw_job['department']}")
+    if raw_job.get("team"):
+        meta_parts.append(f"Team: {raw_job['team']}")
+    # Legacy Ashby GraphQL fields
     if raw_job.get("departmentName"):
         meta_parts.append(f"Department: {raw_job['departmentName']}")
     if raw_job.get("teamNames"):
