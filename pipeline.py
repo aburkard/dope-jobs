@@ -166,7 +166,7 @@ def step_parse(conn, base_url: str, model: str, api_key: str | None = None,
     return successes
 
 
-def step_load(conn, meili_host: str = "http://localhost:7700"):
+def step_load(conn, meili_host: str = "http://localhost:7700", meili_key: str | None = None):
     """Load parsed jobs from DB into MeiliSearch (upsert, not full-replace)."""
     import meilisearch
     from utils.html_utils import remove_html_markup
@@ -180,6 +180,13 @@ def step_load(conn, meili_host: str = "http://localhost:7700"):
 
     print(f"\n--- LOAD ({len(parsed_rows)} active, {len(removed_ids)} removed) ---")
 
+    # Load company metadata for names, domains, logos
+    company_lookup = {}
+    with conn.cursor() as cur:
+        cur.execute("SELECT ats, board_token, company_name, domain, logo_url FROM pipeline_companies")
+        for r in cur.fetchall():
+            company_lookup[(r[0], r[1])] = {"name": r[2], "domain": r[3], "logo_url": r[4]}
+
     # Build MeiliSearch documents
     docs = []
     for row in parsed_rows:
@@ -188,7 +195,10 @@ def step_load(conn, meili_host: str = "http://localhost:7700"):
             continue
 
         board = row["board_token"]
-        company = board.replace("-", " ").replace("_", " ").title()
+        co = company_lookup.get((row["ats"], board), {})
+        company = co.get("name") or board.replace("-", " ").replace("_", " ").title()
+        company_domain = co.get("domain", "")
+        company_logo = co.get("logo_url", "")
 
         # Location string from parsed metadata
         locs = m.get("locations", [])
@@ -214,6 +224,8 @@ def step_load(conn, meili_host: str = "http://localhost:7700"):
             "tagline": m.get("tagline", ""),
             "company": company,
             "company_slug": board,
+            "company_domain": company_domain,
+            "company_logo": company_logo,
             "description": "",  # Could fetch from R2 later
             "location": location_str,
             "_geo": geo,
@@ -240,7 +252,8 @@ def step_load(conn, meili_host: str = "http://localhost:7700"):
             "ats_type": row["ats"],
         })
 
-    client = meilisearch.Client(meili_host)
+    key = meili_key or os.environ.get("MEILISEARCH_MASTER_KEY", "")
+    client = meilisearch.Client(meili_host, key)
     index = client.index("jobs")
 
     # Configure index settings (idempotent)
@@ -289,7 +302,8 @@ def main():
     parser.add_argument("--model", default="gpt-5.4-nano-2026-03-17", help="LLM model name")
     parser.add_argument("--max-per-company", type=int, default=50, help="Max jobs per company")
     parser.add_argument("--parse-limit", type=int, default=None, help="Max jobs to parse per run")
-    parser.add_argument("--meili-host", default="http://localhost:7700")
+    parser.add_argument("--meili-host", default=None, help="MeiliSearch host (default: MEILISEARCH_HOST env var or localhost)")
+    parser.add_argument("--meili-key", default=None, help="MeiliSearch master key (default: MEILISEARCH_MASTER_KEY env var)")
     args = parser.parse_args()
 
     conn = get_connection()
@@ -311,7 +325,8 @@ def main():
 
     # Step 3: Load to MeiliSearch
     if not args.skip_load:
-        step_load(conn, meili_host=args.meili_host)
+        meili_host = args.meili_host or os.environ.get("MEILISEARCH_HOST", "http://localhost:7700")
+        step_load(conn, meili_host=meili_host, meili_key=args.meili_key)
     else:
         print("Skipping load")
 

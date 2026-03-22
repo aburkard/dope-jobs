@@ -76,10 +76,14 @@ def content_hash(raw_job: dict) -> str:
 
 
 def job_id(raw_job: dict) -> str:
-    """Build the compound job ID."""
+    """Get the compound job ID. The scraper's normalize_job already builds
+    the format ats__board_token__job_id in the 'id' field."""
+    jid = raw_job.get("id", "")
+    if jid and "__" in jid:
+        return jid
+    # Fallback: build it ourselves
     ats = raw_job.get("ats_name", "")
     board = raw_job.get("board_token", "")
-    jid = raw_job.get("id", raw_job.get("absolute_url", ""))
     return f"{ats}__{board}__{jid}"
 
 
