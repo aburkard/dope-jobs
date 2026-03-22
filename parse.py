@@ -390,40 +390,46 @@ FLAT_JSON_SCHEMA: dict = {
 }
 
 
-def _sentinel_str(val: str | None) -> str | None:
-    """Convert empty string sentinel to None."""
-    return val if val else None
+def _to_str(val) -> str | None:
+    """Convert empty string or None to None."""
+    if val is None or val == "":
+        return None
+    return str(val)
 
-def _sentinel_int(val: int | float | None) -> int | None:
-    """Convert 0 sentinel to None."""
-    return int(val) if val else None
+def _to_int(val) -> int | None:
+    """Convert 0, None, or empty to None."""
+    if val is None or val == "" or val == 0:
+        return None
+    return int(val)
 
-def _sentinel_float(val: float | None) -> float | None:
-    """Convert 0 sentinel to None."""
-    return val if val else None
+def _to_float(val) -> float | None:
+    """Convert 0, None, or empty to None."""
+    if val is None or val == "" or val == 0:
+        return None
+    return float(val)
 
 def _flat_to_job_metadata(data: dict) -> JobMetadata:
     """Convert flat schema output to nested JobMetadata model."""
     # Reconstruct salary (0 = not disclosed)
-    s_min = _sentinel_int(data.pop("salary_min", 0))
-    s_max = _sentinel_int(data.pop("salary_max", 0))
-    s_cur = _sentinel_str(data.pop("salary_currency", ""))
-    s_per = _sentinel_str(data.pop("salary_period", ""))
+    s_min = _to_int(data.pop("salary_min", 0))
+    s_max = _to_int(data.pop("salary_max", 0))
+    s_cur = _to_str(data.pop("salary_currency", ""))
+    s_per = _to_str(data.pop("salary_period", ""))
     data["salary"] = Salary(min=s_min, max=s_max, currency=s_cur or "USD", period=s_per or "annually") if (s_min or s_max) else None
 
     # Reconstruct location ("" = unknown)
-    l_city = _sentinel_str(data.pop("location_city", ""))
-    l_state = _sentinel_str(data.pop("location_state", ""))
-    l_country = _sentinel_str(data.pop("location_country", ""))
-    l_lat = _sentinel_float(data.pop("location_lat", 0))
-    l_lng = _sentinel_float(data.pop("location_lng", 0))
+    l_city = _to_str(data.pop("location_city", ""))
+    l_state = _to_str(data.pop("location_state", ""))
+    l_country = _to_str(data.pop("location_country", ""))
+    l_lat = _to_float(data.pop("location_lat", 0))
+    l_lng = _to_float(data.pop("location_lng", 0))
     data["locations"] = [Location(city=l_city, state=l_state, country_code=l_country, lat=l_lat, lng=l_lng)] if (l_city or l_state or l_country) else []
 
     # Reconstruct equity
     data["equity"] = Equity(
         offered=data.pop("equity_offered", False),
-        min_pct=_sentinel_float(data.pop("equity_min_pct", 0)),
-        max_pct=_sentinel_float(data.pop("equity_max_pct", 0)),
+        min_pct=_to_float(data.pop("equity_min_pct", 0)),
+        max_pct=_to_float(data.pop("equity_max_pct", 0)),
     )
 
     # Deduplicate vibe_tags
@@ -441,23 +447,23 @@ def _flat_to_job_metadata(data: dict) -> JobMetadata:
         data["company_stage"] = None
 
     # company_size (0 = unknown)
-    cs_min = _sentinel_int(data.pop("company_size_min", 0))
-    cs_max = _sentinel_int(data.pop("company_size_max", 0))
+    cs_min = _to_int(data.pop("company_size_min", 0))
+    cs_max = _to_int(data.pop("company_size_max", 0))
     data["company_size"] = MinMax(min=cs_min, max=cs_max) if (cs_min or cs_max) else None
 
     # team_size (0 = unknown)
-    ts_min = _sentinel_int(data.pop("team_size_min", 0))
-    ts_max = _sentinel_int(data.pop("team_size_max", 0))
+    ts_min = _to_int(data.pop("team_size_min", 0))
+    ts_max = _to_int(data.pop("team_size_max", 0))
     data["team_size"] = MinMax(min=ts_min, max=ts_max) if (ts_min or ts_max) else None
 
     # years_experience (0 = unknown)
-    ye_min = _sentinel_int(data.pop("years_experience_min", 0))
-    ye_max = _sentinel_int(data.pop("years_experience_max", 0))
+    ye_min = _to_int(data.pop("years_experience_min", 0))
+    ye_max = _to_int(data.pop("years_experience_max", 0))
     data["years_experience"] = MinMax(min=ye_min, max=ye_max) if (ye_min or ye_max) else None
 
     # remote_timezone_range ("" = unknown)
-    tz_earliest = _sentinel_str(data.pop("remote_timezone_earliest", ""))
-    tz_latest = _sentinel_str(data.pop("remote_timezone_latest", ""))
+    tz_earliest = _to_str(data.pop("remote_timezone_earliest", ""))
+    tz_latest = _to_str(data.pop("remote_timezone_latest", ""))
     data["remote_timezone_range"] = TimezoneRange(earliest=tz_earliest, latest=tz_latest) if (tz_earliest and tz_latest) else None
 
     # reports_to ("" = unknown)
@@ -495,8 +501,17 @@ def _parse_response(content: str, use_flat: bool = False) -> JobMetadata | None:
         content = content.strip()
     try:
         data = json.loads(content)
-        if use_flat:
+    except json.JSONDecodeError:
+        return None
+
+    # Try flat schema conversion first, then direct Pydantic validation
+    if use_flat:
+        try:
             return _flat_to_job_metadata(data)
+        except Exception:
+            pass
+    # Fall back to direct validation (handles both nested and partially flat)
+    try:
         return JobMetadata.model_validate(data)
     except Exception:
         return None
@@ -514,6 +529,12 @@ class OpenAIBackend:
         self._api_key = api_key
         self._use_constrained = use_constrained
 
+    def _max_tokens_param(self, max_tokens: int) -> dict:
+        """Newer OpenAI models use max_completion_tokens instead of max_tokens."""
+        if "api.openai.com" in self._base_url:
+            return {"max_completion_tokens": max_tokens}
+        return {"max_tokens": max_tokens}
+
     def extract_batch(self, job_texts: list[str], max_tokens: int = 2000) -> list[JobMetadata | None]:
         results = []
         for text in job_texts:
@@ -524,7 +545,7 @@ class OpenAIBackend:
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": build_user_prompt(text)},
                     ],
-                    "max_tokens": max_tokens,
+                    **self._max_tokens_param(max_tokens),
                     "temperature": 0.1,
                 }
                 if self._use_constrained:
@@ -540,7 +561,9 @@ class OpenAIBackend:
                 )
                 data = resp.json()
                 content = data["choices"][0]["message"]["content"]
-                parsed = _parse_response(content, use_flat=self._use_constrained)
+                # Always try flat first (our prompt asks for flat fields),
+                # then fall back to nested Pydantic validation
+                parsed = _parse_response(content, use_flat=True)
                 if parsed is None:
                     print(f"  Failed to parse response: {content[:200]}...", file=sys.stderr)
                 results.append(parsed)

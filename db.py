@@ -48,6 +48,7 @@ def init_schema(conn):
             last_parsed_at TIMESTAMPTZ,
             removed_at TIMESTAMPTZ,
             needs_parse BOOLEAN DEFAULT TRUE,
+            raw_json JSONB,
             parsed_json JSONB
         )""",
         "CREATE INDEX IF NOT EXISTS idx_jobs_needs_parse ON pipeline_jobs (needs_parse) WHERE needs_parse = TRUE",
@@ -124,14 +125,15 @@ def upsert_scraped_jobs(conn, scraped_jobs: list[dict]) -> dict:
             new_jobs.append(raw)
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO pipeline_jobs (id, ats, board_token, title, content_hash, first_seen_at, last_seen_at, needs_parse)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE)
+                    INSERT INTO pipeline_jobs (id, ats, board_token, title, content_hash, first_seen_at, last_seen_at, needs_parse, raw_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, %s)
                     ON CONFLICT (id) DO UPDATE SET
                         last_seen_at = EXCLUDED.last_seen_at,
                         content_hash = EXCLUDED.content_hash,
                         needs_parse = TRUE,
-                        removed_at = NULL
-                """, (jid, ats, board, title, h, now, now))
+                        removed_at = NULL,
+                        raw_json = EXCLUDED.raw_json
+                """, (jid, ats, board, title, h, now, now, Json(raw)))
         elif existing[jid] != h:
             # Content changed
             changed_jobs.append(raw)
@@ -142,9 +144,10 @@ def upsert_scraped_jobs(conn, scraped_jobs: list[dict]) -> dict:
                         title = %s,
                         last_seen_at = %s,
                         needs_parse = TRUE,
-                        removed_at = NULL
+                        removed_at = NULL,
+                        raw_json = %s
                     WHERE id = %s
-                """, (h, title, now, jid))
+                """, (h, title, now, Json(raw), jid))
         else:
             # Unchanged
             unchanged += 1
@@ -174,13 +177,13 @@ def mark_removed(conn, ats: str, board_token: str, seen_ids: set[str]) -> int:
 
 
 def get_jobs_needing_parse(conn, limit: int | None = None) -> list[dict]:
-    """Get jobs that need LLM parsing."""
-    query = "SELECT id, ats, board_token, title FROM pipeline_jobs WHERE needs_parse = TRUE AND removed_at IS NULL"
+    """Get jobs that need LLM parsing, including raw_json for text preparation."""
+    query = "SELECT id, ats, board_token, title, raw_json FROM pipeline_jobs WHERE needs_parse = TRUE AND removed_at IS NULL"
     if limit:
         query += f" LIMIT {limit}"
     with conn.cursor() as cur:
         cur.execute(query)
-        return [{"id": r[0], "ats": r[1], "board_token": r[2], "title": r[3]} for r in cur.fetchall()]
+        return [{"id": r[0], "ats": r[1], "board_token": r[2], "title": r[3], "raw_json": r[4]} for r in cur.fetchall()]
 
 
 def save_parsed_result(conn, job_id: str, parsed_json: dict):

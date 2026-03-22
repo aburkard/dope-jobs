@@ -1,72 +1,58 @@
 # dopejobs curated company list
 # Format: ats:board_token
-# Hand-picked for interesting companies across industries
 
-# --- Tech / AI ---
+# --- AI / ML ---
 greenhouse:anthropic
-greenhouse:openai
 greenhouse:deepmind
-greenhouse:figma
-greenhouse:notion
-greenhouse:vercel
-greenhouse:linear
-greenhouse:replit
-lever:andurilindustries
+greenhouse:scaleai
+greenhouse:grammarly
 greenhouse:databricks
+
+# --- Dev Tools / Infra ---
+greenhouse:figma
+greenhouse:vercel
 greenhouse:stripe
-greenhouse:ramp
-
-# --- Space / Deep Tech ---
-greenhouse:boomsupersonic
-greenhouse:relativityspace
-greenhouse:astranis
-greenhouse:jobyaviation
-lever:hadrian
-greenhouse:hermeus
-
-# --- Climate / Energy ---
-greenhouse:watershed
-greenhouse:arcadia
-lever:turntide
+greenhouse:cloudflare
+greenhouse:cockroachlabs
+greenhouse:planetscale
+greenhouse:gitlab
+greenhouse:airtable
+greenhouse:lattice
 
 # --- Fintech ---
-greenhouse:mercury
 greenhouse:brex
-lever:rho
-greenhouse:plaid
-
-# --- Gaming / Creative ---
-greenhouse:roblox
-greenhouse:epicgames
-greenhouse:discordapp
-lever:midjourney
+greenhouse:mercury
+greenhouse:robinhood
+greenhouse:chime
+greenhouse:coinbase
 
 # --- Consumer / E-commerce ---
 greenhouse:airbnb
-lever:doordash
 greenhouse:instacart
-greenhouse:nianticlabs
-
-# --- Health / Bio ---
-greenhouse:tempus
-lever:cerebras
-greenhouse:benchling
-
-# --- Dev Tools / Infra ---
-greenhouse:cockroachlabs
-greenhouse:planetscale
-greenhouse:supabase
-lever:railway
-greenhouse:fly
-
-# --- Enterprise / SaaS ---
-greenhouse:airtable
-greenhouse:retool
-lever:dbt-labs
-
-# --- Misc Cool ---
+greenhouse:lyft
+greenhouse:dropbox
+greenhouse:reddit
 greenhouse:duolingo
-lever:readwise
-ashby:ramp
-ashby:notion
-ashby:linear
+greenhouse:discord
+
+# --- Gaming ---
+greenhouse:roblox
+greenhouse:epicgames
+greenhouse:twitch
+
+# --- Space / Deep Tech ---
+greenhouse:astranis
+greenhouse:andurilindustries
+greenhouse:verkada
+greenhouse:samsara
+
+# --- Climate ---
+greenhouse:watershed
+
+# --- HR / Enterprise ---
+greenhouse:gusto
+greenhouse:flexport
+greenhouse:relativity
+
+# --- Music ---
+lever:spotify
