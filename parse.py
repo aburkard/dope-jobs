@@ -655,7 +655,7 @@ def merge_api_data(raw_job: dict, llm_metadata: dict) -> dict:
 
     # --- Salary: Ashby compensationSalarySummary ---
     comp_salary = raw_job.get("compensationSalarySummary")
-    if comp_salary and not merged.get("salary", {}).get("min"):
+    if comp_salary and not (merged.get("salary") or {}).get("min"):
         import re
         # Parse "$150K - $250K" style
         amounts = re.findall(r'\$[\d,.]+[KkMm]?', comp_salary)
