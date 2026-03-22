@@ -146,7 +146,7 @@ def step_parse(conn, base_url: str, model: str, api_key: str | None = None,
                limit: int | None = None):
     """Parse jobs that need extraction (needs_parse=True)."""
     import os
-    from parse import OpenAIBackend, prepare_job_text
+    from parse import OpenAIBackend, prepare_job_text, merge_api_data
 
     pending = get_jobs_needing_parse(conn, limit=limit)
     if not pending:
@@ -175,6 +175,8 @@ def step_parse(conn, base_url: str, model: str, api_key: str | None = None,
 
             if result is not None:
                 parsed = result.model_dump(mode="json")
+                # Overlay structured API data (salary, office_type, etc.)
+                parsed = merge_api_data(raw, parsed)
                 save_parsed_result(conn, jid, parsed)
                 successes += 1
         except Exception as e:

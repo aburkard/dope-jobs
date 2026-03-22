@@ -623,6 +623,113 @@ class LocalBackend:
 # Job loading helpers
 # ---------------------------------------------------------------------------
 
+def merge_api_data(raw_job: dict, llm_metadata: dict) -> dict:
+    """Overlay structured API data onto LLM-extracted metadata.
+    API data wins for fields it provides — more reliable and free."""
+
+    merged = dict(llm_metadata)
+
+    # --- Salary: Greenhouse pay_input_ranges ---
+    pay_ranges = raw_job.get("pay_input_ranges", [])
+    if pay_ranges:
+        pay = pay_ranges[0]  # use first range
+        min_cents = pay.get("min_cents")
+        max_cents = pay.get("max_cents")
+        currency = pay.get("currency_type", "USD")
+        title = (pay.get("title") or "").lower()
+        period = "annually"
+        if "hour" in title:
+            period = "hourly"
+        elif "month" in title:
+            period = "monthly"
+        elif "week" in title:
+            period = "weekly"
+        if min_cents or max_cents:
+            merged["salary"] = {
+                "min": min_cents / 100 if min_cents else None,
+                "max": max_cents / 100 if max_cents else None,
+                "currency": currency,
+                "period": period,
+            }
+            merged["salary_transparency"] = "full_range" if (min_cents and max_cents) else "minimum_only"
+
+    # --- Salary: Ashby compensationSalarySummary ---
+    comp_salary = raw_job.get("compensationSalarySummary")
+    if comp_salary and not merged.get("salary", {}).get("min"):
+        import re
+        # Parse "$150K - $250K" style
+        amounts = re.findall(r'\$[\d,.]+[KkMm]?', comp_salary)
+        if len(amounts) >= 2:
+            def parse_amount(s):
+                s = s.replace('$', '').replace(',', '')
+                multiplier = 1
+                if s.upper().endswith('K'):
+                    multiplier = 1000
+                    s = s[:-1]
+                elif s.upper().endswith('M'):
+                    multiplier = 1_000_000
+                    s = s[:-1]
+                return float(s) * multiplier
+            try:
+                merged["salary"] = {
+                    "min": parse_amount(amounts[0]),
+                    "max": parse_amount(amounts[1]),
+                    "currency": "USD",
+                    "period": "annually",
+                }
+                merged["salary_transparency"] = "full_range"
+            except (ValueError, IndexError):
+                pass
+
+    # --- Office type: Ashby workplaceType, Lever workplaceType ---
+    workplace = raw_job.get("workplaceType", "")
+    if workplace:
+        wp_lower = workplace.lower()
+        if wp_lower in ("remote",):
+            merged["office_type"] = "remote"
+        elif wp_lower in ("hybrid",):
+            merged["office_type"] = "hybrid"
+        elif wp_lower in ("onsite", "on-site", "in-office"):
+            merged["office_type"] = "onsite"
+
+    # --- Job type: Ashby employmentType, Lever commitment ---
+    emp_type = raw_job.get("employmentType", "")
+    commitment = raw_job.get("commitment", "")
+    type_str = (emp_type or commitment).lower()
+    if type_str:
+        type_map = {
+            "fulltime": "full-time", "full-time": "full-time", "permanent": "full-time",
+            "parttime": "part-time", "part-time": "part-time",
+            "contract": "contract", "contractor": "contract",
+            "intern": "internship", "internship": "internship",
+            "temporary": "temporary", "temp": "temporary",
+            "freelance": "freelance",
+        }
+        mapped = type_map.get(type_str)
+        if mapped:
+            merged["job_type"] = mapped
+
+    # --- Location: Ashby structured address ---
+    if raw_job.get("locationCity") and not merged.get("locations"):
+        merged["locations"] = [{
+            "city": raw_job.get("locationCity"),
+            "state": raw_job.get("locationRegion"),
+            "country_code": raw_job.get("locationCountry"),
+            "lat": None,
+            "lng": None,
+        }]
+
+    # --- Equity: Ashby compensation summary ---
+    comp_summary = raw_job.get("compensationTierSummary", "")
+    if comp_summary and "equity" in comp_summary.lower():
+        if isinstance(merged.get("equity"), dict):
+            merged["equity"]["offered"] = True
+        else:
+            merged["equity"] = {"offered": True, "min_pct": None, "max_pct": None}
+
+    return merged
+
+
 def load_raw_jobs(path: str, limit: int | None = None) -> list[dict]:
     """Load raw jobs from a JSONL or JSONL.bz2 file."""
     jobs = []
@@ -655,28 +762,14 @@ def prepare_job_text(raw_job: dict, max_chars: int = 8000) -> str:
         meta_parts.append(f"Location: {loc['name']}")
     elif isinstance(loc, str) and loc:
         meta_parts.append(f"Location: {loc}")
-    # Greenhouse structured fields
+    # Only pass location context to LLM (helps with geocoding)
+    # Salary, office_type, job_type come from API structured data — not LLM
     if raw_job.get("departments"):
         meta_parts.append(f"Department: {', '.join(raw_job['departments'])}")
     if raw_job.get("offices"):
         office_names = [o.get("location") or o.get("name", "") for o in raw_job["offices"]]
         if office_names:
             meta_parts.append(f"Offices: {', '.join(office_names)}")
-    if raw_job.get("pay_input_ranges"):
-        for pay in raw_job["pay_input_ranges"]:
-            min_val = pay.get("min_cents", 0) / 100 if pay.get("min_cents") else None
-            max_val = pay.get("max_cents", 0) / 100 if pay.get("max_cents") else None
-            currency = pay.get("currency_type", "USD")
-            title = pay.get("title", "Pay")
-            if min_val and max_val:
-                meta_parts.append(f"{title} ${min_val:,.0f} - ${max_val:,.0f} {currency}")
-            elif min_val:
-                meta_parts.append(f"{title} ${min_val:,.0f}+ {currency}")
-    # Lever structured fields
-    if raw_job.get("commitment"):
-        meta_parts.append(f"Commitment: {raw_job['commitment']}")
-    if raw_job.get("workplaceType") and not raw_job.get("workplaceType") == "unspecified":
-        meta_parts.append(f"Workplace: {raw_job['workplaceType']}")
     if raw_job.get("department"):
         meta_parts.append(f"Department: {raw_job['department']}")
     if raw_job.get("allLocations"):
@@ -684,7 +777,7 @@ def prepare_job_text(raw_job: dict, max_chars: int = 8000) -> str:
     elif raw_job.get("categories") and isinstance(raw_job["categories"], dict):
         if raw_job["categories"].get("location"):
             meta_parts.append(f"Location: {raw_job['categories']['location']}")
-    # Ashby fields (REST API provides structured data)
+    # Ashby location context (helps LLM with geocoding, other fields come from API)
     if raw_job.get("locationName"):
         meta_parts.append(f"Location: {raw_job['locationName']}")
     if raw_job.get("locationCity"):
@@ -698,23 +791,10 @@ def prepare_job_text(raw_job: dict, max_chars: int = 8000) -> str:
         locs = [sl.get("location", "") for sl in raw_job["secondaryLocations"] if sl.get("location")]
         if locs:
             meta_parts.append(f"Also in: {', '.join(locs)}")
-    if raw_job.get("workplaceType"):
-        meta_parts.append(f"Workplace: {raw_job['workplaceType']}")
-    if raw_job.get("employmentType"):
-        meta_parts.append(f"Employment type: {raw_job['employmentType']}")
-    if raw_job.get("compensationTierSummary"):
-        meta_parts.append(f"Compensation: {raw_job['compensationTierSummary']}")
-    if raw_job.get("compensationSalarySummary"):
-        meta_parts.append(f"Salary: {raw_job['compensationSalarySummary']}")
     if raw_job.get("department"):
         meta_parts.append(f"Department: {raw_job['department']}")
     if raw_job.get("team"):
         meta_parts.append(f"Team: {raw_job['team']}")
-    # Legacy Ashby GraphQL fields
-    if raw_job.get("departmentName"):
-        meta_parts.append(f"Department: {raw_job['departmentName']}")
-    if raw_job.get("teamNames"):
-        meta_parts.append(f"Team: {', '.join(raw_job['teamNames'])}")
 
     meta_str = "\n".join(meta_parts)
     if meta_str:
