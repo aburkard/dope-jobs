@@ -655,10 +655,25 @@ def prepare_job_text(raw_job: dict, max_chars: int = 8000) -> str:
         meta_parts.append(f"Location: {loc['name']}")
     elif isinstance(loc, str) and loc:
         meta_parts.append(f"Location: {loc}")
-    # Lever location
-    cats = raw_job.get("categories", {})
-    if isinstance(cats, dict) and cats.get("location"):
-        meta_parts.append(f"Location: {cats['location']}")
+    # Greenhouse structured fields
+    if raw_job.get("departments"):
+        meta_parts.append(f"Department: {', '.join(raw_job['departments'])}")
+    if raw_job.get("offices"):
+        office_names = [o.get("location") or o.get("name", "") for o in raw_job["offices"]]
+        if office_names:
+            meta_parts.append(f"Offices: {', '.join(office_names)}")
+    # Lever structured fields
+    if raw_job.get("commitment"):
+        meta_parts.append(f"Commitment: {raw_job['commitment']}")
+    if raw_job.get("workplaceType") and not raw_job.get("workplaceType") == "unspecified":
+        meta_parts.append(f"Workplace: {raw_job['workplaceType']}")
+    if raw_job.get("department"):
+        meta_parts.append(f"Department: {raw_job['department']}")
+    if raw_job.get("allLocations"):
+        meta_parts.append(f"Locations: {', '.join(raw_job['allLocations'])}")
+    elif raw_job.get("categories") and isinstance(raw_job["categories"], dict):
+        if raw_job["categories"].get("location"):
+            meta_parts.append(f"Location: {raw_job['categories']['location']}")
     # Ashby fields (REST API provides structured data)
     if raw_job.get("locationName"):
         meta_parts.append(f"Location: {raw_job['locationName']}")

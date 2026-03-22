@@ -43,15 +43,28 @@ class GreenhouseScraper(BaseScraper):
         return response.json()
 
     def normalize_job(self, job):
+        # Extract structured department/office data
+        departments = job.get('departments', [])
+        offices = job.get('offices', [])
+
         return {
             "id": f"greenhouse__{self.board_token}__{job.get('id')}",
             "board_token": self.board_token,
             "company": utils.get_company_name(self.board_token),
             "title": job.get('title'),
+            "content": job.get('content', ''),  # raw HTML for LLM
             "description": self.clean_description(job),
             "location": job.get('location', {}).get('name'),
             "url": job.get('absolute_url'),
             "updated_at": job.get('updated_at'),
+            "first_published": job.get('first_published'),
+
+            # Structured data from API
+            "departments": [d.get('name') for d in departments if d.get('name')],
+            "offices": [
+                {"name": o.get('name', ''), "location": o.get('location', '')}
+                for o in offices
+            ],
         }
 
     # TODO: Compare this with utils.remove_html_markup(double_unescape=True)

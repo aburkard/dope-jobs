@@ -47,15 +47,26 @@ class LeverScraper(BaseScraper):
 
     def normalize_job(self, job):
         description = self.clean_description(job)
+        categories = job.get('categories', {}) or {}
+
         return {
             "id": f"lever__{self.board_token}__{job.get('id')}",
             "board_token": self.board_token,
             "company": utils.get_company_name(self.board_token),
             "title": job.get('text'),
             "description": description,
-            "location": (job.get('categories', {}) or {}).get('location'),
+            "additionalPlain": job.get('additionalPlain', ''),  # often has compensation
+            "location": categories.get('location'),
             "url": job.get('hostedUrl'),
-            # "updated_at": None,
+            "applyUrl": job.get('applyUrl'),
+            "country": job.get('country', ''),
+
+            # Structured data from API
+            "workplaceType": job.get('workplaceType', ''),  # onsite, remote, hybrid
+            "department": categories.get('department', ''),
+            "commitment": categories.get('commitment', ''),  # Full-time, Part-time, etc.
+            "team": categories.get('team', ''),
+            "allLocations": categories.get('allLocations', []),
         }
 
     def clean_description(self, job):
