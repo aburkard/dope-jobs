@@ -34,31 +34,61 @@ def extract_greenhouse(token: str) -> dict:
             return info
         soup = BeautifulSoup(r.text, "lxml")
 
-        # Logo: prioritized search
-        # 1. Greenhouse CDN logo path (highest quality)
-        # 2. img with "logo" in alt text
-        # 3. img with "logo" in src URL
-        # 4. First img in a header/banner area
+        # Logo: prioritized search for SQUARE images
+        # 1. apple-touch-icon (always square, best quality)
+        # 2. link rel=icon with large sizes (128px+)
+        # 3. Greenhouse CDN /logos/ path in og:image
+        # 4. img with "logo" in alt (only if square CDN URL pattern)
         logo_candidates = []
-        for img in soup.find_all("img"):
-            src = img.get("src", "")
-            alt = img.get("alt", "").lower()
-            if not src or src.startswith("data:"):
+
+        # Check link tags for icons
+        for link in soup.find_all("link", rel=True):
+            rel = " ".join(link.get("rel", []))
+            href = link.get("href", "")
+            if not href or href.startswith("data:"):
                 continue
-            if "/logos/" in src:
-                logo_candidates.insert(0, src)  # CDN logos first
-            elif "logo" in alt:
-                logo_candidates.insert(0 if not logo_candidates else 1, src)
-            elif "logo" in src.lower():
-                logo_candidates.append(src)
-            elif "brand" in alt or "brand" in src.lower():
-                logo_candidates.append(src)
-        # Also check for og:image meta tag
+            # Make absolute URL
+            if href.startswith("//"):
+                href = "https:" + href
+            elif href.startswith("/"):
+                href = f"https://boards.greenhouse.io{href}"
+            if "apple-touch-icon" in rel:
+                logo_candidates.insert(0, href)  # Best option
+            elif "icon" in rel:
+                # Prefer larger icons
+                sizes = link.get("sizes", "")
+                if sizes and any(int(s.split("x")[0]) >= 128 for s in sizes.split() if "x" in s):
+                    logo_candidates.insert(min(1, len(logo_candidates)), href)
+
+        # Check og:image — only use if from Greenhouse CDN /logos/ path (those are square)
         og = soup.find("meta", property="og:image")
         if og and og.get("content"):
-            logo_candidates.append(og["content"])
+            og_url = og["content"]
+            if "/logos/" in og_url:
+                logo_candidates.insert(min(1, len(logo_candidates)), og_url)
+
         if logo_candidates:
             info["logo_url"] = logo_candidates[0]
+
+        # Description from og:description
+        og_desc = soup.find("meta", property="og:description")
+        if og_desc and og_desc.get("content"):
+            desc = og_desc["content"].strip()
+            # Strip HTML from description
+            if "<" in desc:
+                desc = BeautifulSoup(desc, "lxml").get_text()
+            if desc and len(desc) > len(info.get("description", "")):
+                info["description"] = desc
+
+        # Social links
+        socials = {}
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            for platform in ["twitter.com", "x.com", "linkedin.com", "github.com"]:
+                if platform in href:
+                    socials[platform.split(".")[0]] = href
+        if socials:
+            info["socials"] = socials
 
         # Domain: find external links, pick the most common domain
         domains = {}
@@ -97,27 +127,25 @@ def extract_lever(token: str) -> dict:
             return info
         soup = BeautifulSoup(r.text, "lxml")
 
-        # Logo: search in multiple places
+        # Logo: prioritize S3 client logos (square), then og:image
         logo_candidates = []
         for img in soup.find_all("img"):
             src = img.get("src", "")
             alt = img.get("alt", "").lower()
-            if not src or src.startswith("data:"):
+            if not src or src.startswith("data:") or src.startswith("/img/lever"):
                 continue
-            if "logo" in alt or "logo" in src.lower():
+            # Make absolute
+            if src.startswith("/"):
+                src = f"https://jobs.lever.co{src}"
+            # Lever S3 client logos are square
+            if "lever-client-logos" in src:
                 logo_candidates.insert(0, src)
-            elif "brand" in alt:
+            elif "logo" in alt and "lever" not in alt:
                 logo_candidates.append(src)
-        # Check header area
-        header = soup.find("div", class_="main-header-logo")
-        if header:
-            img = header.find("img")
-            if img and img.get("src"):
-                logo_candidates.insert(0, img["src"])
-        # og:image fallback
+        # og:image — usually the client logo on Lever
         og = soup.find("meta", property="og:image")
-        if og and og.get("content"):
-            logo_candidates.append(og["content"])
+        if og and og.get("content") and "lever-client-logos" in og["content"]:
+            logo_candidates.insert(0, og["content"])
         if logo_candidates:
             info["logo_url"] = logo_candidates[0]
 
@@ -154,8 +182,10 @@ def extract_lever(token: str) -> dict:
 
 
 def extract_ashby(token: str) -> dict:
-    """Extract logo + domain from Ashby GraphQL API."""
+    """Extract logo + domain from Ashby GraphQL API + board page."""
     info = {}
+
+    # GraphQL API
     try:
         r = requests.post("https://jobs.ashbyhq.com/api/non-user-graphql", json={
             "operationName": "ApiJobBoardWithTeams",
@@ -172,20 +202,66 @@ def extract_ashby(token: str) -> dict:
         }, timeout=10)
         if r.ok:
             board = r.json().get("data", {}).get("jobBoard", {})
-            info["company_name"] = board.get("title")
-            info["description"] = board.get("descriptionPlain", "")
-            if board.get("logoImageLink"):
-                info["logo_url"] = board["logoImageLink"]
-            website = board.get("publicWebsite", "")
-            if website:
-                parsed = urlparse(website if "://" in website else f"https://{website}")
-                host = parsed.hostname or ""
-                if host.startswith("www."):
-                    host = host[4:]
-                info["domain"] = host
-            info["job_count"] = len(board.get("jobPostings", []))
+            if board:
+                info["company_name"] = board.get("title")
+                info["description"] = board.get("descriptionPlain", "")
+                if board.get("logoImageLink"):
+                    info["logo_url"] = board["logoImageLink"]
+                website = board.get("publicWebsite", "")
+                if website:
+                    parsed = urlparse(website if "://" in website else f"https://{website}")
+                    host = parsed.hostname or ""
+                    if host.startswith("www."):
+                        host = host[4:]
+                    info["domain"] = host
+                info["job_count"] = len(board.get("jobPostings", []))
     except Exception as e:
         info["_error"] = str(e)
+
+    # Also scrape the board page for logo/domain if API didn't provide
+    if not info.get("logo_url") or not info.get("domain"):
+        try:
+            r = requests.get(f"https://jobs.ashbyhq.com/{token}", timeout=10)
+            if r.ok:
+                soup = BeautifulSoup(r.text, "lxml")
+
+                # og:image for logo
+                if not info.get("logo_url"):
+                    og = soup.find("meta", property="og:image")
+                    if og and og.get("content"):
+                        info["logo_url"] = og["content"]
+
+                # og:title for company name
+                if not info.get("company_name"):
+                    og_title = soup.find("meta", property="og:title")
+                    if og_title and og_title.get("content"):
+                        title = og_title["content"]
+                        # Usually "Company - Jobs" or similar
+                        for sep in [" - ", " | ", " — "]:
+                            if sep in title:
+                                title = title.split(sep)[0].strip()
+                                break
+                        info["company_name"] = title
+
+                # External links for domain
+                if not info.get("domain"):
+                    domains = {}
+                    for a in soup.find_all("a", href=True):
+                        href = a["href"]
+                        if not href.startswith("http"):
+                            continue
+                        host = urlparse(href).hostname or ""
+                        if any(skip in host for skip in ["ashbyhq", "google", "cdn"]):
+                            continue
+                        if host.startswith("www."):
+                            host = host[4:]
+                        if host:
+                            domains[host] = domains.get(host, 0) + 1
+                    if domains:
+                        info["domain"] = max(domains, key=domains.get)
+        except Exception:
+            pass
+
     return info
 
 
