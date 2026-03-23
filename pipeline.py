@@ -290,21 +290,13 @@ def step_load(conn, meili_host: str = "http://localhost:7700", meili_key: str | 
         if locs and locs[0].get("lat") and locs[0].get("lng"):
             geo = {"lat": locs[0]["lat"], "lng": locs[0]["lng"]}
 
-        # Build description from raw_json if available
+        # Build description from raw_json with boilerplate removed
         raw = row.get("raw_json") or {}
-        description = (
-            raw.get("description", "")
-            or raw.get("descriptionPlain", "")
-            or ""
-        )
-        if not description and raw.get("content"):
-            from utils.html_utils import remove_html_markup
-            description = remove_html_markup(raw["content"], double_unescape=True)
-        # Strip boilerplate from end (~last 10% of lines)
-        if description:
-            lines = [l.strip() for l in description.split('\n') if l.strip()]
-            cutoff = max(1, len(lines) // 10)
-            description = '\n'.join(lines[:-cutoff] if cutoff > 0 else lines)
+        if raw:
+            from detect_boilerplate import clean_description as clean_desc
+            description = clean_desc(conn, board, raw)
+        else:
+            description = ""
 
         # String versions of arrays for embedding template
         skills_text = ', '.join(m.get("hard_skills", []) + m.get("soft_skills", []))
