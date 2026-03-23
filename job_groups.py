@@ -9,7 +9,7 @@ from collections import defaultdict
 from dotenv import load_dotenv
 load_dotenv()
 
-from db import get_connection
+from db import get_connection, content_hash as content_hash_str
 from parse import prepare_job_text
 
 
@@ -38,17 +38,18 @@ def compute_job_groups(conn) -> dict:
     """
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT id, board_token, title, raw_json
+            SELECT id, board_token, title, raw_json, content_hash
             FROM pipeline_jobs
             WHERE parsed_json IS NOT NULL AND removed_at IS NULL
             ORDER BY board_token, title
         """)
         rows = cur.fetchall()
 
-    # Group candidates by company + exact title
+    # Group candidates by company + normalized title
     by_key = defaultdict(list)
-    for job_id, board, title, raw_json in rows:
-        by_key[(board, title)].append((job_id, raw_json))
+    for job_id, board, title, raw_json, stored_hash in rows:
+        normalized_title = (title or "").strip()
+        by_key[(board, normalized_title)].append((job_id, raw_json, stored_hash))
 
     groups = {}
     group_stats = {"groups": 0, "grouped_jobs": 0, "singletons": 0}
@@ -58,53 +59,62 @@ def compute_job_groups(conn) -> dict:
             group_stats["singletons"] += 1
             continue
 
-        # Prepare texts
+        # Prepare texts and collect content hashes
         texts = {}
-        for job_id, raw_json in candidates:
+        hashes = {}
+        for job_id, raw_json, stored_hash in candidates:
             if raw_json:
                 texts[job_id] = prepare_job_text(raw_json)
+            hashes[job_id] = stored_hash or ""
 
         if len(texts) < 2:
             continue
 
-        # Cluster by similarity
-        # Simple approach: compare each to the first, group if similar
-        # (For most cases, all variants of a role are similar to each other)
-        job_ids = list(texts.keys())
-        reference_id = job_ids[0]
-        reference_text = texts[reference_id]
+        # First pass: group by identical content hash (guaranteed same content)
+        by_hash = defaultdict(list)
+        for jid, h in hashes.items():
+            if h:
+                by_hash[h].append(jid)
 
-        cluster = [reference_id]
-        for jid in job_ids[1:]:
-            sim = content_similarity(reference_text, texts[jid])
-            if sim >= SIMILARITY_THRESHOLD:
-                cluster.append(jid)
+        # Second pass: merge hash groups that are similar (>threshold)
+        # This catches cases where content differs slightly (localized salary/legal)
+        hash_groups = list(by_hash.values())
+        merged_clusters = []
 
-        if len(cluster) > 1:
-            # Generate group hash from company + title
-            group_hash = hashlib.sha256(f"{board}__{title}".encode()).hexdigest()[:16]
+        while hash_groups:
+            current = hash_groups.pop(0)
+            # Only need similarity check if texts are available
+            ref_jid = current[0]
+            if ref_jid not in texts:
+                if len(current) > 1:
+                    merged_clusters.append(current)
+                continue
+            ref_text = texts[ref_jid]
+            i = 0
+            while i < len(hash_groups):
+                other_jid = hash_groups[i][0]
+                # Same hash = same content, auto-merge
+                if hashes.get(other_jid) == hashes.get(ref_jid) and hashes.get(ref_jid):
+                    current.extend(hash_groups.pop(i))
+                elif other_jid in texts:
+                    sim = content_similarity(ref_text, texts[other_jid])
+                    if sim >= SIMILARITY_THRESHOLD:
+                        current.extend(hash_groups.pop(i))
+                    else:
+                        i += 1
+                else:
+                    i += 1
+            if len(current) > 1:
+                merged_clusters.append(current)
+
+        # Assign group hashes
+        for ci, cluster in enumerate(merged_clusters):
+            suffix = f"__{ci}" if ci > 0 else ""
+            group_hash = hashlib.sha256(f"{board}__{title}{suffix}".encode()).hexdigest()[:16]
             for jid in cluster:
                 groups[jid] = group_hash
             group_stats["groups"] += 1
             group_stats["grouped_jobs"] += len(cluster)
-
-        # Handle remaining jobs that didn't match the reference
-        # (e.g., same title but different team)
-        remaining = [jid for jid in job_ids if jid not in cluster]
-        if len(remaining) > 1:
-            # These could form their own subgroup — check pairwise
-            ref2 = remaining[0]
-            cluster2 = [ref2]
-            for jid in remaining[1:]:
-                sim = content_similarity(texts[ref2], texts[jid])
-                if sim >= SIMILARITY_THRESHOLD:
-                    cluster2.append(jid)
-            if len(cluster2) > 1:
-                group_hash2 = hashlib.sha256(f"{board}__{title}__alt".encode()).hexdigest()[:16]
-                for jid in cluster2:
-                    groups[jid] = group_hash2
-                group_stats["groups"] += 1
-                group_stats["grouped_jobs"] += len(cluster2)
 
     return groups, group_stats
 
