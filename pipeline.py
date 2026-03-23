@@ -148,7 +148,7 @@ def step_parse(conn, base_url: str, model: str, api_key: str | None = None,
                limit: int | None = None):
     """Parse jobs that need extraction (needs_parse=True)."""
     import os
-    from parse import OpenAIBackend, prepare_job_text, merge_api_data
+    from parse import OpenAIBackend, GeminiBackend, prepare_job_text, merge_api_data
 
     pending = get_jobs_needing_parse(conn, limit=limit)
     if not pending:
@@ -156,8 +156,13 @@ def step_parse(conn, base_url: str, model: str, api_key: str | None = None,
         return 0
 
     print(f"\n--- PARSE ({len(pending)} jobs pending) ---")
-    key = api_key or os.environ.get("OPENAI_API_KEY", "not-needed")
-    backend = OpenAIBackend(base_url, model, api_key=key)
+    # Choose backend based on model name
+    if "gemini" in model.lower():
+        key = api_key or os.environ.get("GEMINI_API_KEY", "")
+        backend = GeminiBackend(model=model, api_key=key)
+    else:
+        key = api_key or os.environ.get("OPENAI_API_KEY", "not-needed")
+        backend = OpenAIBackend(base_url, model, api_key=key)
 
     successes = 0
     t0 = time.time()
@@ -334,7 +339,7 @@ def main():
     parser.add_argument("--skip-load", action="store_true")
     parser.add_argument("--parse-pending", action="store_true", help="Only parse jobs with needs_parse=True")
     parser.add_argument("--base-url", default="https://api.openai.com/v1", help="LLM API base URL")
-    parser.add_argument("--model", default="gpt-5.4-nano-2026-03-17", help="LLM model name")
+    parser.add_argument("--model", default="gemini-3.1-flash-lite-preview", help="LLM model name (gemini-* uses Gemini API, others use OpenAI API)")
     parser.add_argument("--max-per-company", type=int, default=50, help="Max jobs per company")
     parser.add_argument("--parse-limit", type=int, default=None, help="Max jobs to parse per run")
     parser.add_argument("--meili-host", default=None, help="MeiliSearch host (default: MEILISEARCH_HOST env var or localhost)")

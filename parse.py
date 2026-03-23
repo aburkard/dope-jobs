@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import bz2
 import json
+import os
 import sys
 import time
 from enum import Enum
@@ -32,6 +33,7 @@ from utils.html_utils import remove_html_markup
 class Industry(str, Enum):
     agriculture = "agriculture"
     aerospace_defense = "aerospace_defense"
+    ai_ml = "ai_ml"
     automotive = "automotive"
     biotechnology = "biotechnology"
     construction = "construction"
@@ -227,31 +229,58 @@ class JobMetadata(BaseModel):
 # Prompt construction
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are a job posting metadata extractor. Extract ALL fields thoroughly.
+SYSTEM_PROMPT = """You are extracting metadata from a job posting for dopejobs, a job board that helps people find roles they'll actually be excited about.
 
-CRITICAL — do not leave these empty:
-- hard_skills: List ALL technical/domain skills explicitly mentioned (e.g. Python, Excel, SQL, Figma, project management, financial modeling)
-- soft_skills: List ALL interpersonal skills explicitly mentioned (e.g. communication, leadership, collaboration)
-- benefits_categories: Categorize ALL benefits explicitly mentioned using the enum values
-- tagline: Write a catchy one-sentence summary. Do NOT just repeat the job title.
+Your extractions should help job seekers quickly decide: "Is this worth my time?"
 
-Sentinel values (no nulls):
-- Use 0 for unknown numbers (salary, years_experience, team_size, company_size, travel_percent, interview_stages)
-- Use "" for unknown strings (location, reports_to, salary_currency, timezone)
-- Use "unknown" for unknown company_stage
-- Use "not_specified" for unknown education_level
+TAGLINE: One sentence, under 120 characters. Write like a friend telling you about a cool job — specific, vivid, human. Mention what you'd actually WORK ON and why it matters. Include the company name.
+Good: "You'll 3D-print rocket engines at Relativity Space"
+Good: "Own Duolingo's Gen-Z marketing blitz in Beijing"
+Good: "Build the AI safety evals that decide if frontier models ship at Anthropic"
+OK but boring: "Develop advanced additive manufacturing processes for Terran R"
+Bad: "Join a fast-growing company as a software engineer"
 
-Extraction rules:
-- salary: Extract ALL compensation numbers mentioned, including hourly pay rates. Include the full range if mentioned. Can be decimal for hourly (e.g. 19.50). Use 0 if not disclosed.
-- salary_transparency: "full_range" ONLY if both min and max are stated. "minimum_only" if only a floor/base. "not_disclosed" if no salary mentioned.
-- cool_factor: Rate honestly. Most jobs are "standard" or "interesting". Only truly remarkable opportunities are "compelling" or "exceptional". Generic corporate roles are "boring" or "standard".
-- vibe_tags: Only include tags with CLEAR textual evidence. Do not default to mission_driven or diverse_inclusive unless genuinely demonstrated. Each tag should appear at most once.
-- benefits_highlights: Max 3 UNUSUAL perks only (not standard health/dental/vision).
-- company_size: ONLY extract if the posting EXPLICITLY states a number of employees (e.g. "450+ employees", "team of 1000+"). Use the stated number for both min and max. If the posting does NOT mention employee count at all, you MUST use 0. Do NOT use your knowledge of the company to guess.
-- team_size: ONLY extract if the posting EXPLICITLY states the team size. Use 0 if not mentioned. Do NOT guess.
-- years_experience, education_level: ONLY extract if EXPLICITLY stated as a requirement. If not mentioned, use 0 or "not_specified".
-- industry: Choose based on the COMPANY's primary business, not the job title. Travel/booking platforms → "hospitality_tourism". Software/tech companies → "saas_software". A tech company with "Water" products is still tech, not hospitality.
-- company_size: If only a minimum is stated (e.g. "450+ employees"), use that number for min and set max to the SAME number. Do NOT extrapolate or project future size."""
+COOL FACTOR: Calibrate carefully. ~10% boring, ~40% standard, ~30% interesting, ~15% compelling, ~5% exceptional.
+- boring: generic back-office role at unremarkable company (data entry, temp admin)
+- standard: decent job but nothing particularly stands out. This is the DEFAULT. SDR/BDR, account exec, coordinator, associate, ops/logistics, PM/TPM, sourcing, junior analyst roles are almost always "standard" even at good companies. Ask: "would my friend who works in a different industry think this is cool?" If no → standard.
+- interesting: notable company OR genuinely unique role OR clearly above-average compensation.
+- compelling: notable company AND unique/impactful role AND strong signals. Examples: AI safety researcher at a frontier lab, rocket engineer at a space startup, lead designer at a top consumer product.
+- exceptional: once-in-a-career. EXTREMELY rare, maybe 1 in 200 jobs.
+A temp/contract role is almost never above "interesting".
+
+INDUSTRY: Classify by what the company SELLS to end users, not the function of this specific role:
+- AI labs, ML platforms, AI safety orgs → ai_ml
+- Design/collaboration tools (Figma, Canva) → saas_software
+- Gaming platforms → gaming
+- Language learning apps → education
+- Fintech/expense management → financial_services
+- Security/cybersecurity companies → cybersecurity
+- Lodging/travel platforms (Airbnb, Booking.com) → hospitality_tourism
+- Music/video streaming → entertainment_media
+- Do NOT classify by the job function. An accountant at a gaming company is "gaming". A sourcing manager at a travel company is "hospitality_tourism".
+- Do NOT use biotechnology for AI companies.
+
+EXPERIENCE LEVEL:
+- entry: intern, new grad, associate, coordinator, 0-2 years
+- mid: 2-5 years, no "senior" in title
+- senior: "Senior" in title, or 5+ years required
+- staff: "Staff" in title
+- principal: "Principal" or "Distinguished" in title
+- executive: VP, Director, C-suite, Head of
+
+IS MANAGER: true ONLY if the role manages people (Director of X, Engineering Manager, Team Lead, Head of). Individual contributors are false, even if senior/staff/principal.
+
+VIBE TAGS: Only include tags where you can point to specific text evidence. "We value diversity" is NOT evidence for diverse_inclusive — look for concrete programs, ERGs, specific policies. Each tag needs a real signal in the text.
+
+BENEFITS HIGHLIGHTS: EXACTLY 0-3 perks that would make someone say "wow, really?"
+NOT highlights (never list): health/dental/vision, 401k/pension, PTO/vacation (even if "generous"/"unlimited"), standard parental leave, remote/hybrid, equity/stock options.
+ARE highlights: "$10K learning budget", "6-month parental leave", "4-day work weeks", "sabbatical", "fertility benefits $10K+", pro-bono programs, on-site childcare, pet insurance. If nothing unusual → empty array [].
+
+VISA SPONSORSHIP: "yes" if mentions sponsorship/visa support. "no" if "must be authorized to work" or "no sponsorship". "unknown" if not mentioned.
+
+Sentinel values (no nulls): Use 0 for unknown numbers, "" for unknown strings, "unknown" for unknown company_stage, "not_specified" for unknown education_level.
+
+LANGUAGE: ALL output MUST be in English, regardless of posting language. Translate everything."""
 
 
 COMPACT_SCHEMA = """Extract these fields as JSON:
@@ -266,7 +295,7 @@ COMPACT_SCHEMA = """Extract these fields as JSON:
 - job_type: "full-time"|"part-time"|"contract"|"internship"|"temporary"|"freelance"
 - experience_level: "entry"|"mid"|"senior"|"staff"|"principal"|"executive"
 - is_manager: boolean
-- industry: one of [agriculture, aerospace_defense, automotive, biotechnology, construction, consulting, consumer_goods, cryptocurrency_web3, cybersecurity, education, energy_utilities, entertainment_media, fashion_apparel, financial_services, food_beverage, gaming, government, healthcare, hospitality_tourism, insurance, legal, logistics_supply_chain, manufacturing, marketing_advertising, nonprofit, pharmaceuticals, real_estate, retail_ecommerce, robotics, saas_software, semiconductors, telecommunications, transportation, other]
+- industry: one of [agriculture, aerospace_defense, ai_ml, automotive, biotechnology, construction, consulting, consumer_goods, cryptocurrency_web3, cybersecurity, education, energy_utilities, entertainment_media, fashion_apparel, financial_services, food_beverage, gaming, government, healthcare, hospitality_tourism, insurance, legal, logistics_supply_chain, manufacturing, marketing_advertising, nonprofit, pharmaceuticals, real_estate, retail_ecommerce, robotics, saas_software, semiconductors, telecommunications, transportation, other]
 - hard_skills (array): ALL technical/domain skills mentioned
 - soft_skills (array): ALL interpersonal skills mentioned
 - cool_factor: "boring"|"standard"|"interesting"|"compelling"|"exceptional". Most jobs are standard/interesting.
@@ -317,7 +346,7 @@ FLAT_JSON_SCHEMA: dict = {
         "experience_level": {"type": "string", "enum": ["entry", "mid", "senior", "staff", "principal", "executive"]},
         "is_manager": {"type": "boolean"},
         "industry": {"type": "string", "enum": [
-            "agriculture", "aerospace_defense", "automotive", "biotechnology", "construction",
+            "agriculture", "aerospace_defense", "ai_ml", "automotive", "biotechnology", "construction",
             "consulting", "consumer_goods", "cryptocurrency_web3", "cybersecurity", "education",
             "energy_utilities", "entertainment_media", "fashion_apparel", "financial_services",
             "food_beverage", "gaming", "government", "healthcare", "hospitality_tourism",
@@ -569,6 +598,83 @@ class OpenAIBackend:
                 results.append(parsed)
             except Exception as e:
                 print(f"  Error: {e}", file=sys.stderr)
+                results.append(None)
+        return results
+
+
+class GeminiBackend:
+    """Backend using Google Gemini API with structured output."""
+
+    def __init__(self, model: str = "gemini-3.1-flash-lite-preview", api_key: str | None = None):
+        import requests
+        self._session = requests.Session()
+        self._model = model
+        self._api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
+        self._schema = {
+            "type": "OBJECT",
+            "properties": {
+                "tagline": {"type": "STRING", "description": "One sentence that makes a job seeker stop scrolling"},
+                "location_city": {"type": "STRING"}, "location_state": {"type": "STRING"},
+                "location_country": {"type": "STRING"}, "location_lat": {"type": "NUMBER"}, "location_lng": {"type": "NUMBER"},
+                "salary_min": {"type": "NUMBER"}, "salary_max": {"type": "NUMBER"},
+                "salary_currency": {"type": "STRING"},
+                "salary_period": {"type": "STRING", "enum": ["hourly", "weekly", "monthly", "annually"]},
+                "salary_transparency": {"type": "STRING", "enum": ["full_range", "minimum_only", "not_disclosed"]},
+                "office_type": {"type": "STRING", "enum": ["remote", "hybrid", "onsite"]},
+                "hybrid_days": {"type": "INTEGER"},
+                "job_type": {"type": "STRING", "enum": ["full-time", "part-time", "contract", "internship", "temporary", "freelance"]},
+                "experience_level": {"type": "STRING", "enum": ["entry", "mid", "senior", "staff", "principal", "executive"]},
+                "is_manager": {"type": "BOOLEAN"},
+                "industry": {"type": "STRING", "enum": [e.value for e in Industry]},
+                "hard_skills": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "soft_skills": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "cool_factor": {"type": "STRING", "enum": ["boring", "standard", "interesting", "compelling", "exceptional"]},
+                "vibe_tags": {"type": "ARRAY", "items": {"type": "STRING", "enum": [e.value for e in VibeTag]}},
+                "visa_sponsorship": {"type": "STRING", "enum": ["yes", "no", "unknown"]},
+                "equity_offered": {"type": "BOOLEAN"},
+                "company_stage": {"type": "STRING", "enum": [
+                    "pre-seed", "seed", "series-a", "series-b", "series-c-plus",
+                    "public", "bootstrapped", "government", "nonprofit", "unknown"]},
+                "company_size_min": {"type": "INTEGER"}, "company_size_max": {"type": "INTEGER"},
+                "team_size_min": {"type": "INTEGER"}, "team_size_max": {"type": "INTEGER"},
+                "reports_to": {"type": "STRING"},
+                "benefits_categories": {"type": "ARRAY", "items": {"type": "STRING", "enum": [e.value for e in BenefitCategory]}},
+                "benefits_highlights": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "education_level": {"type": "STRING", "enum": ["none", "high-school", "bachelors", "masters", "phd", "not_specified"]},
+                "years_experience_min": {"type": "INTEGER"}, "years_experience_max": {"type": "INTEGER"},
+            },
+            "required": ["tagline", "office_type", "job_type", "experience_level", "is_manager",
+                          "industry", "hard_skills", "soft_skills", "cool_factor", "vibe_tags",
+                          "visa_sponsorship", "benefits_categories", "salary_transparency"],
+        }
+
+    def extract_batch(self, job_texts: list[str], max_tokens: int = 2000) -> list[JobMetadata | None]:
+        results = []
+        for text in job_texts:
+            try:
+                resp = self._session.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{self._model}:generateContent?key={self._api_key}",
+                    json={
+                        "contents": [{"parts": [{"text": f"{SYSTEM_PROMPT}\n\nExtract metadata:\n\n{text}"}]}],
+                        "generationConfig": {
+                            "temperature": 0.1,
+                            "maxOutputTokens": max_tokens,
+                            "responseMimeType": "application/json",
+                            "responseSchema": self._schema,
+                        },
+                    },
+                    timeout=60,
+                )
+                data = resp.json()
+                content = data["candidates"][0]["content"]["parts"][0]["text"]
+                parsed = _parse_response(content, use_flat=True)
+                if parsed is None:
+                    parsed = _parse_response(content, use_flat=False)
+                if parsed is None:
+                    print(f"  Failed to parse Gemini response: {content[:200]}...", file=sys.stderr)
+                results.append(parsed)
+            except Exception as e:
+                print(f"  Gemini error: {e}", file=sys.stderr)
                 results.append(None)
         return results
 
