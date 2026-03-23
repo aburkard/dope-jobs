@@ -659,7 +659,7 @@ def merge_api_data(raw_job: dict, llm_metadata: dict) -> dict:
         import re
         # Parse "$150K - $250K" style
         amounts = re.findall(r'\$[\d,.]+[KkMm]?', comp_salary)
-        if len(amounts) >= 2:
+        if amounts:
             def parse_amount(s):
                 s = s.replace('$', '').replace(',', '')
                 multiplier = 1
@@ -671,13 +671,15 @@ def merge_api_data(raw_job: dict, llm_metadata: dict) -> dict:
                     s = s[:-1]
                 return float(s) * multiplier
             try:
+                min_val = parse_amount(amounts[0])
+                max_val = parse_amount(amounts[1]) if len(amounts) >= 2 else min_val
                 merged["salary"] = {
-                    "min": parse_amount(amounts[0]),
-                    "max": parse_amount(amounts[1]),
+                    "min": min_val,
+                    "max": max_val,
                     "currency": "USD",
                     "period": "annually",
                 }
-                merged["salary_transparency"] = "full_range"
+                merged["salary_transparency"] = "full_range" if len(amounts) >= 2 else "minimum_only"
             except (ValueError, IndexError):
                 pass
 

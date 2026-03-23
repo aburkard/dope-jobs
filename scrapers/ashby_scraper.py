@@ -88,14 +88,14 @@ class AshbyScraper(BaseScraper):
         Preserves structured fields that save LLM extraction."""
         # Location handling
         location = job.get('location', '')
-        address = job.get('address', {}).get('postalAddress', {})
-        secondary = job.get('secondaryLocations', [])
+        address = (job.get('address') or {}).get('postalAddress', {}) or {}
+        secondary = job.get('secondaryLocations') or []
 
         # Compensation
-        compensation = job.get('compensation', {})
+        compensation = job.get('compensation') or {}
         comp_summary = compensation.get('compensationTierSummary', '')
         comp_salary = compensation.get('scrapeableCompensationSalarySummary', '')
-        comp_tiers = compensation.get('compensationTiers', [])
+        comp_tiers = compensation.get('compensationTiers') or []
 
         return {
             "id": f"{self.ats_name}__{self.board_token}__{job.get('id', '')}",
@@ -117,9 +117,9 @@ class AshbyScraper(BaseScraper):
             "secondaryLocations": [
                 {
                     "location": sl.get('location', ''),
-                    "city": sl.get('address', {}).get('postalAddress', {}).get('addressLocality', ''),
-                    "region": sl.get('address', {}).get('postalAddress', {}).get('addressRegion', ''),
-                    "country": sl.get('address', {}).get('postalAddress', {}).get('addressCountry', ''),
+                    "city": ((sl.get('address') or {}).get('postalAddress') or {}).get('addressLocality', ''),
+                    "region": ((sl.get('address') or {}).get('postalAddress') or {}).get('addressRegion', ''),
+                    "country": ((sl.get('address') or {}).get('postalAddress') or {}).get('addressCountry', ''),
                 }
                 for sl in secondary
             ],

@@ -73,6 +73,20 @@ class TestAshbyCompensation:
         result = merge_api_data(raw, llm)
         assert result["salary"]["min"] == 100000  # from pay_input_ranges, not Ashby
 
+    def test_single_amount(self):
+        raw = {"compensationSalarySummary": "$295K"}
+        llm = {"salary": None}
+        result = merge_api_data(raw, llm)
+        assert result["salary"]["min"] == 295000
+        assert result["salary"]["max"] == 295000
+        assert result["salary_transparency"] == "minimum_only"
+
+    def test_handles_none_compensation(self):
+        raw = {"compensationSalarySummary": None}
+        llm = {"salary": None}
+        result = merge_api_data(raw, llm)
+        assert result["salary"] is None
+
     def test_equity_detection(self):
         raw = {"compensationTierSummary": "$150K – $250K • Offers Equity"}
         llm = {"equity": {"offered": False, "min_pct": None, "max_pct": None}}
