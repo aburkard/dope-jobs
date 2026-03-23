@@ -290,6 +290,32 @@ def step_load(conn, meili_host: str = "http://localhost:7700", meili_key: str | 
         if locs and locs[0].get("lat") and locs[0].get("lng"):
             geo = {"lat": locs[0]["lat"], "lng": locs[0]["lng"]}
 
+        # Build description from raw_json if available
+        raw = row.get("raw_json") or {}
+        description = (
+            raw.get("description", "")
+            or raw.get("descriptionPlain", "")
+            or ""
+        )
+        if not description and raw.get("content"):
+            from utils.html_utils import remove_html_markup
+            description = remove_html_markup(raw["content"], double_unescape=True)
+        # Strip boilerplate from end (~last 10% of lines)
+        if description:
+            lines = [l.strip() for l in description.split('\n') if l.strip()]
+            cutoff = max(1, len(lines) // 10)
+            description = '\n'.join(lines[:-cutoff] if cutoff > 0 else lines)
+
+        # String versions of arrays for embedding template
+        skills_text = ', '.join(m.get("hard_skills", []) + m.get("soft_skills", []))
+        vibes_text = ', '.join(v.replace('_', ' ') for v in m.get("vibe_tags", []))
+        sal_text = ""
+        if sal and sal.get("min"):
+            sal_text = f"${sal['min']:,.0f}"
+            if sal.get("max") and sal["max"] != sal["min"]:
+                sal_text += f"-${sal['max']:,.0f}"
+            sal_text += f" {sal.get('period', 'annually')}"
+
         docs.append({
             "id": row["id"],
             "title": row["title"],
@@ -298,7 +324,7 @@ def step_load(conn, meili_host: str = "http://localhost:7700", meili_key: str | 
             "company_slug": board,
             "company_domain": company_domain,
             "company_logo": company_logo,
-            "description": "",  # Could fetch from R2 later
+            "description": description[:3000],
             "location": location_str,
             "_geo": geo,
             "office_type": m.get("office_type", ""),

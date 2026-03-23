@@ -240,13 +240,13 @@ def record_parse_error(conn, job_id: str, error: str):
 
 def get_parsed_jobs(conn, include_removed: bool = False) -> list[dict]:
     """Get all parsed jobs for loading into MeiliSearch."""
-    query = "SELECT id, ats, board_token, title, parsed_json, job_group FROM pipeline_jobs WHERE parsed_json IS NOT NULL"
+    query = "SELECT id, ats, board_token, title, parsed_json, job_group, raw_json FROM pipeline_jobs WHERE parsed_json IS NOT NULL"
     if not include_removed:
         query += " AND removed_at IS NULL"
     with conn.cursor() as cur:
         cur.execute(query)
         return [
-            {"id": r[0], "ats": r[1], "board_token": r[2], "title": r[3], "parsed_json": r[4], "job_group": r[5]}
+            {"id": r[0], "ats": r[1], "board_token": r[2], "title": r[3], "parsed_json": r[4], "job_group": r[5], "raw_json": r[6]}
             for r in cur.fetchall()
         ]
 
