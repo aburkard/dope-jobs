@@ -145,9 +145,10 @@ def step_scrape(conn, companies: list[tuple[str, str]], max_per_company: int = 5
 
 
 def step_parse(conn, base_url: str, model: str, api_key: str | None = None,
-               limit: int | None = None):
-    """Parse jobs that need extraction (needs_parse=True)."""
+               limit: int | None = None, concurrency: int = 10):
+    """Parse jobs that need extraction (needs_parse=True). Uses concurrent requests."""
     import os
+    import concurrent.futures
     from parse import OpenAIBackend, GeminiBackend, prepare_job_text, merge_api_data
 
     pending = get_jobs_needing_parse(conn, limit=limit)
@@ -155,7 +156,7 @@ def step_parse(conn, base_url: str, model: str, api_key: str | None = None,
         print("\n--- PARSE (0 jobs pending) ---")
         return 0
 
-    print(f"\n--- PARSE ({len(pending)} jobs pending) ---")
+    print(f"\n--- PARSE ({len(pending)} jobs pending, concurrency={concurrency}) ---")
     # Choose backend based on model name
     if "gemini" in model.lower():
         key = api_key or os.environ.get("GEMINI_API_KEY", "")
@@ -165,36 +166,66 @@ def step_parse(conn, base_url: str, model: str, api_key: str | None = None,
         backend = OpenAIBackend(base_url, model, api_key=key)
 
     successes = 0
+    failures = 0
     t0 = time.time()
 
-    for i, job_row in enumerate(pending):
+    def parse_one(job_row):
+        """Parse a single job. Returns (jid, parsed_dict, raw) or (jid, None, raw)."""
         jid = job_row["id"]
         raw = job_row.get("raw_json")
-
         if not raw:
-            print(f"  Skipping {jid}: no raw_json in DB", file=sys.stderr)
-            continue
+            return jid, None, None
 
         try:
             text = prepare_job_text(raw)
             results = backend.extract_batch([text])
             result = results[0]
-
             if result is not None:
                 parsed = result.model_dump(mode="json")
-                # Overlay structured API data (salary, office_type, etc.)
                 parsed = merge_api_data(raw, parsed)
+                return jid, parsed, raw
+        except Exception as e:
+            return jid, None, raw, str(e)
+
+        return jid, None, raw
+
+    # Process in concurrent batches
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = {}
+        submitted = 0
+        completed = 0
+
+        # Submit all jobs
+        for job_row in pending:
+            future = executor.submit(parse_one, job_row)
+            futures[future] = job_row
+            submitted += 1
+
+        # Collect results as they complete
+        for future in concurrent.futures.as_completed(futures):
+            completed += 1
+            result_tuple = future.result()
+
+            if len(result_tuple) == 4:
+                # Error case
+                jid, _, raw, error = result_tuple
+                record_parse_error(conn, jid, error)
+                failures += 1
+            elif result_tuple[1] is not None:
+                jid, parsed, raw = result_tuple
                 save_parsed_result(conn, jid, parsed)
                 successes += 1
-        except Exception as e:
-            record_parse_error(conn, jid, str(e))
-            print(f"  Error parsing {jid}: {e}", file=sys.stderr)
+            else:
+                jid = result_tuple[0]
+                if result_tuple[2] is not None:
+                    record_parse_error(conn, jid, "parse returned None")
+                failures += 1
 
-        if (i + 1) % 10 == 0 or i == len(pending) - 1:
-            elapsed = time.time() - t0
-            rate = (i + 1) / elapsed if elapsed > 0 else 0
-            eta = (len(pending) - i - 1) / rate if rate > 0 else 0
-            print(f"  {i+1}/{len(pending)} | {successes} ok | {rate:.2f} jobs/s | ETA {eta/60:.0f}m")
+            if completed % 50 == 0 or completed == len(pending):
+                elapsed = time.time() - t0
+                rate = completed / elapsed if elapsed > 0 else 0
+                eta = (len(pending) - completed) / rate / 60 if rate > 0 else 0
+                print(f"  {completed}/{len(pending)} | {successes} ok | {failures} fail | {rate:.1f} jobs/s | ETA {eta:.0f}m")
 
     print(f"Parsed {successes}/{len(pending)}")
     return successes
@@ -220,6 +251,13 @@ def step_load(conn, meili_host: str = "http://localhost:7700", meili_key: str | 
         cur.execute("SELECT ats, board_token, company_name, domain, logo_url FROM pipeline_companies")
         for r in cur.fetchall():
             company_lookup[(r[0], r[1])] = {"name": r[2], "domain": r[3], "logo_url": r[4]}
+
+    # Count locations per job_group for "Also in N locations" display
+    group_counts = {}
+    for row in parsed_rows:
+        g = row.get("job_group")
+        if g:
+            group_counts[g] = group_counts.get(g, 0) + 1
 
     # Build MeiliSearch documents
     docs = []
@@ -284,6 +322,8 @@ def step_load(conn, meili_host: str = "http://localhost:7700", meili_key: str | 
             "benefits_highlights": m.get("benefits_highlights", []),
             "reports_to": m.get("reports_to"),
             "ats_type": row["ats"],
+            "job_group": row.get("job_group") or row["id"],  # ungrouped jobs use their own ID
+            "location_count": group_counts.get(row.get("job_group"), 1),
         })
 
     key = meili_key or os.environ.get("MEILISEARCH_MASTER_KEY", "")
@@ -297,6 +337,7 @@ def step_load(conn, meili_host: str = "http://localhost:7700", meili_key: str | 
         "cool_factor", "vibe_tags", "visa_sponsorship", "equity_offered",
         "company_stage", "benefits_categories", "salary_transparency",
         "salary_min", "salary_max",
+        "job_group", "location_count",
     ])
     index.update_searchable_attributes([
         "title", "tagline", "company", "description", "location",
