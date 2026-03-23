@@ -48,11 +48,14 @@ def init_schema(conn):
             last_parsed_at TIMESTAMPTZ,
             removed_at TIMESTAMPTZ,
             needs_parse BOOLEAN DEFAULT TRUE,
+            parse_error_count INTEGER DEFAULT 0,
+            last_parse_error TEXT,
             raw_json JSONB,
             parsed_json JSONB
         )""",
         "CREATE INDEX IF NOT EXISTS idx_jobs_needs_parse ON pipeline_jobs (needs_parse) WHERE needs_parse = TRUE",
         "CREATE INDEX IF NOT EXISTS idx_jobs_board ON pipeline_jobs (ats, board_token)",
+        "CREATE INDEX IF NOT EXISTS idx_jobs_removed ON pipeline_jobs (removed_at) WHERE removed_at IS NOT NULL",
     ]
     with conn.cursor() as cur:
         for stmt in statements:
@@ -157,7 +160,8 @@ def upsert_scraped_jobs(conn, scraped_jobs: list[dict]) -> dict:
                     WHERE id = %s
                 """, (h, title, now, Json(raw), jid))
         else:
-            # Content unchanged — but check if source updated since our last scrape
+            # Content unchanged — still update raw_json (metadata may have changed)
+            # and check if source updated since our last scrape
             unchanged += 1
             source_updated = raw.get("updated_at")
             last_seen = existing[jid]["last_seen_at"]
@@ -174,8 +178,8 @@ def upsert_scraped_jobs(conn, scraped_jobs: list[dict]) -> dict:
 
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE pipeline_jobs SET last_seen_at = %s, removed_at = NULL WHERE id = %s",
-                    (now, jid)
+                    "UPDATE pipeline_jobs SET last_seen_at = %s, removed_at = NULL, raw_json = %s WHERE id = %s",
+                    (now, Json(raw), jid)
                 )
 
     conn.commit()
@@ -218,6 +222,19 @@ def save_parsed_result(conn, job_id: str, parsed_json: dict):
                 needs_parse = FALSE
             WHERE id = %s
         """, (Json(parsed_json), now, job_id))
+    conn.commit()
+
+
+def record_parse_error(conn, job_id: str, error: str):
+    """Record a parse failure. After 3 failures, stop retrying."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE pipeline_jobs SET
+                parse_error_count = COALESCE(parse_error_count, 0) + 1,
+                last_parse_error = %s,
+                needs_parse = (COALESCE(parse_error_count, 0) + 1) < 3
+            WHERE id = %s
+        """, (error[:500], job_id))
     conn.commit()
 
 

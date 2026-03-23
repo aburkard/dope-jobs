@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import itertools
 import json
 import time
 import sys
@@ -27,7 +28,7 @@ from scrapers.jobvite_scraper import JobviteScraper
 from db import (
     get_connection, init_schema, upsert_scraped_jobs, mark_removed,
     job_id, upsert_company, get_jobs_needing_parse, save_parsed_result,
-    get_parsed_jobs, get_removed_job_ids,
+    record_parse_error, get_parsed_jobs, get_removed_job_ids,
 )
 
 
@@ -73,8 +74,7 @@ def step_scrape(conn, companies: list[tuple[str, str]], max_per_company: int = 5
 
         try:
             scraper = scraper_cls(token)
-            all_jobs = list(scraper.fetch_jobs())
-            jobs = all_jobs[:max_per_company]
+            jobs = list(itertools.islice(scraper.fetch_jobs(), max_per_company))
 
             # Detect changes against DB
             result = upsert_scraped_jobs(conn, jobs)
@@ -115,7 +115,7 @@ def step_scrape(conn, companies: list[tuple[str, str]], max_per_company: int = 5
                 company_name = scraper.get_company_name()
             except Exception:
                 pass
-            upsert_company(conn, ats, token, company_name=company_name, job_count=len(all_jobs))
+            upsert_company(conn, ats, token, company_name=company_name, job_count=len(jobs))
 
             status_parts = []
             if n_new: status_parts.append(f"{n_new} new")
@@ -134,6 +134,8 @@ def step_scrape(conn, companies: list[tuple[str, str]], max_per_company: int = 5
         except Exception as e:
             errors += 1
             print(f"  {ats}:{token} — ERROR: {e}")
+            # Don't update company record on error — avoid marking as inactive
+            continue
 
         time.sleep(0.3)
 
@@ -180,6 +182,7 @@ def step_parse(conn, base_url: str, model: str, api_key: str | None = None,
                 save_parsed_result(conn, jid, parsed)
                 successes += 1
         except Exception as e:
+            record_parse_error(conn, jid, str(e))
             print(f"  Error parsing {jid}: {e}", file=sys.stderr)
 
         if (i + 1) % 10 == 0 or i == len(pending) - 1:
@@ -288,6 +291,7 @@ def step_load(conn, meili_host: str = "http://localhost:7700", meili_key: str | 
         "industry", "company_slug", "ats_type",
         "cool_factor", "vibe_tags", "visa_sponsorship", "equity_offered",
         "company_stage", "benefits_categories", "salary_transparency",
+        "salary_min", "salary_max",
     ])
     index.update_searchable_attributes([
         "title", "tagline", "company", "description", "location",
@@ -295,23 +299,28 @@ def step_load(conn, meili_host: str = "http://localhost:7700", meili_key: str | 
     ])
     index.update_sortable_attributes(["salary_min", "salary_max"])
 
-    # Upsert documents (not full replace)
+    # Upsert documents in batches
+    BATCH_SIZE = 1000
     if docs:
-        task = index.add_documents(docs, primary_key="id")
-        print(f"  Upserting {len(docs)} documents... (task {task.task_uid})")
-        try:
-            client.wait_for_task(task.task_uid, timeout_in_ms=30000)
-        except Exception:
-            print("  (waiting for index timed out, but task is queued)")
+        for i in range(0, len(docs), BATCH_SIZE):
+            batch = docs[i:i + BATCH_SIZE]
+            task = index.add_documents(batch, primary_key="id")
+            print(f"  Upserting batch {i//BATCH_SIZE + 1} ({len(batch)} docs)... (task {task.task_uid})")
+            try:
+                client.wait_for_task(task.task_uid, timeout_in_ms=60000)
+            except Exception:
+                print("  (waiting for index timed out, but task is queued)")
 
-    # Delete removed jobs
+    # Delete removed jobs in batches
     if removed_ids:
-        task = index.delete_documents(ids=removed_ids)
-        print(f"  Deleting {len(removed_ids)} removed jobs...")
-        try:
-            client.wait_for_task(task.task_uid, timeout_in_ms=10000)
-        except Exception:
-            pass
+        for i in range(0, len(removed_ids), BATCH_SIZE):
+            batch = removed_ids[i:i + BATCH_SIZE]
+            task = index.delete_documents(ids=batch)
+            print(f"  Deleting batch ({len(batch)} removed jobs)...")
+            try:
+                client.wait_for_task(task.task_uid, timeout_in_ms=30000)
+            except Exception:
+                pass
 
     stats = index.get_stats()
     print(f"  Index: {stats.number_of_documents} documents")

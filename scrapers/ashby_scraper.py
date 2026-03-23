@@ -143,13 +143,22 @@ class AshbyScraper(BaseScraper):
         return self.html2text.handle(text).strip()
 
     def get_company_name(self):
-        data = self.fetch_job_board()
-        return data['data']['organization']['name']
+        try:
+            data = self.fetch_job_board()
+            return data['data']['organization']['name']
+        except (KeyError, TypeError):
+            return None
 
     def get_company_domain(self):
-        data = self.fetch_job_board()
-        return data['data']['organization']['publicWebsite']
+        try:
+            data = self.fetch_job_board()
+            return data['data']['organization']['publicWebsite']
+        except (KeyError, TypeError):
+            return None
 
     def get_company_logo_url(self):
-        data = self.fetch_job_board()
-        return data['data']['organization']['theme']['logoSquareImageUrl']
+        try:
+            data = self.fetch_job_board()
+            return data['data']['organization']['theme']['logoSquareImageUrl']
+        except (KeyError, TypeError):
+            return None

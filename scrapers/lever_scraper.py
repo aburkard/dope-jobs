@@ -116,6 +116,9 @@ class LeverScraper(BaseScraper):
         if not hasattr(self, '_cached_company_logo_url'):
             raw_html = self._fetch_html()
             soup = BeautifulSoup(raw_html, 'html.parser')
-            og_image = soup.find('meta', property='og:image')['content']
-            self._cached_company_logo_url = og_image.split('?')[0]
+            og_image = soup.find('meta', property='og:image')
+            if og_image and og_image.get('content'):
+                self._cached_company_logo_url = og_image['content'].split('?')[0]
+            else:
+                self._cached_company_logo_url = None
         return self._cached_company_logo_url
