@@ -290,11 +290,21 @@ def step_load(conn, meili_host: str = "http://localhost:7700", meili_key: str | 
         if locs and locs[0].get("lat") and locs[0].get("lng"):
             geo = {"lat": locs[0]["lat"], "lng": locs[0]["lng"]}
 
-        # Build description from raw_json with boilerplate removed
+        # Build description from raw_json — raw content only, no metadata injection
         raw = row.get("raw_json") or {}
-        if raw:
-            from detect_boilerplate import clean_description as clean_desc
-            description = clean_desc(conn, board, raw)
+        raw_desc = (
+            raw.get("description", "")
+            or raw.get("descriptionPlain", "")
+            or ""
+        )
+        if not raw_desc and raw.get("content"):
+            from utils.html_utils import remove_html_markup
+            raw_desc = remove_html_markup(raw["content"], double_unescape=True)
+        # Remove boilerplate
+        if raw_desc:
+            from detect_boilerplate import get_boilerplate_hashes, remove_boilerplate
+            bp_hashes = get_boilerplate_hashes(conn, board)
+            description = remove_boilerplate(raw_desc, bp_hashes)
         else:
             description = ""
 
