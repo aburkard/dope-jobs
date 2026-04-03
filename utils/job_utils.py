@@ -1,6 +1,6 @@
-import requests
+"""Compatibility wrapper for the canonical pipeline utils.job_utils module."""
+
+from legacy_pipeline_bridge import reexport_pipeline_module
 
 
-# TODO: Make this better, possibly a static list
-def get_company_name(board_token):
-    return board_token.title().replace('-', ' ')
+reexport_pipeline_module(globals(), "utils/job_utils.py")

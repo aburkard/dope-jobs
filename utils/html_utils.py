@@ -1,13 +1,6 @@
-import html
-import re
+"""Compatibility wrapper for the canonical pipeline utils.html_utils module."""
+
+from legacy_pipeline_bridge import reexport_pipeline_module
 
 
-def remove_html_markup(text, double_unescape=False):
-    text = html.unescape(text)
-    # Greenhouse requires double-escaping
-    if double_unescape:
-        text = html.unescape(text)
-
-    clean_text = re.sub(r'<[^>]+>', '', text)
-
-    return clean_text
+reexport_pipeline_module(globals(), "utils/html_utils.py")

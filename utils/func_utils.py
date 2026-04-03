@@ -1,6 +1,6 @@
-def slice(a_dict, keys):
-    return {key: a_dict[key] for key in keys}
+"""Compatibility wrapper for the canonical pipeline utils.func_utils module."""
+
+from legacy_pipeline_bridge import reexport_pipeline_module
 
 
-def squish(text):
-    return ' '.join(text.split())
+reexport_pipeline_module(globals(), "utils/func_utils.py")
