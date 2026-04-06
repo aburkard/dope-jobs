@@ -4,6 +4,8 @@ Archive repo notes:
 - Use `/Users/aburkard/fun/dopejobs-front` for frontend/product work.
 - Use `/Users/aburkard/fun/dope-jobs-pipeline` for scraping, parsing, DB state, and Meilisearch loads.
 - Treat any pipeline-like code in this repo as legacy/reference only unless the user explicitly asks to work here.
+- For live full-reload/import progress, use `ops/import_status.py` from this repo with the shared `.env`; it reports DB-backed progress plus recent Meili task throughput/ETA.
+- For the search URL-state feature, the regression test lives in `/Users/aburkard/fun/dopejobs-front` as `npm run test:url-state`.
 
 Production search notes:
 
