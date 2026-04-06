@@ -1,0 +1,15 @@
+[Unit]
+Description=Perplexity TEI server for Meilisearch
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+ExecStartPre=-/usr/bin/docker rm -f perplexity-tei
+ExecStart=/usr/bin/docker run --rm --name perplexity-tei -p 127.0.0.1:8088:80 -v /opt/tei-bench:/data ghcr.io/huggingface/text-embeddings-inference:cpu-1.9 --model-id perplexity-ai/pplx-embed-v1-0.6B --dtype float32 --max-batch-tokens 2048 --max-client-batch-size 1
+ExecStop=/usr/bin/docker stop perplexity-tei
+
+[Install]
+WantedBy=multi-user.target

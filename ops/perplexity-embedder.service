@@ -1,0 +1,28 @@
+[Unit]
+Description=Perplexity embedding service for Meilisearch
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/dopejobs
+EnvironmentFile=-/etc/dopejobs-embedder.env
+Environment=PPLX_MODEL_ID=perplexity/pplx-embed-v1-0.6b
+Environment=PPLX_SEARCH_UPSTREAM_URL=http://127.0.0.1:8088/embed
+Environment=PPLX_SEARCH_UPSTREAM_BATCH_SIZE=1
+Environment=PPLX_INDEX_UPSTREAM_BATCH_SIZE=10
+Environment=PPLX_OPENROUTER_URL=https://openrouter.ai/api/v1/embeddings
+Environment=PPLX_OPENROUTER_ENCODING_FORMAT=float
+Environment=PPLX_EMBED_DIM=512
+Environment=PPLX_NORMALIZE=true
+Environment=PPLX_TIMEOUT_SECONDS=30
+Environment=PPLX_STARTUP_RETRIES=30
+Environment=PPLX_STARTUP_RETRY_SECONDS=1
+Environment=PPLX_HOST=0.0.0.0
+Environment=PPLX_PORT=8087
+ExecStart=/opt/dopejobs-embedder/.venv/bin/python /opt/dopejobs/ops/perplexity_embedder_service.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
