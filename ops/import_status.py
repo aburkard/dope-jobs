@@ -107,25 +107,13 @@ def get_db_status() -> DbStatus:
                 FROM pipeline_jobs
                 WHERE removed_at IS NULL
                   AND raw_json IS NOT NULL
-                  AND (
-                      (
-                          meili_loaded_doc_version IS NULL
-                          AND (
-                              meili_loaded_content_hash IS DISTINCT FROM content_hash
-                              OR meili_loaded_last_parsed_at IS DISTINCT FROM last_parsed_at
-                          )
-                      )
-                      OR (
-                          meili_loaded_doc_version IS NOT NULL
-                          AND meili_loaded_doc_version IS DISTINCT FROM md5(
-                              concat_ws(
-                                  '|',
-                                  COALESCE(%s, ''),
-                                  COALESCE(content_hash, ''),
-                                  COALESCE(last_parsed_at::text, ''),
-                                  COALESCE(job_group, id)
-                              )
-                          )
+                  AND meili_loaded_doc_version IS DISTINCT FROM md5(
+                      concat_ws(
+                          '|',
+                          COALESCE(%s, ''),
+                          COALESCE(content_hash, ''),
+                          COALESCE(last_parsed_at::text, ''),
+                          COALESCE(job_group, id)
                       )
                   )
                 """,
@@ -170,7 +158,7 @@ def get_db_status() -> DbStatus:
             )
             parsed, unparsed, parsed_loaded, unparsed_loaded = cur.fetchone()
 
-        loaded = active_raw - pending_load
+        loaded = parsed_loaded + unparsed_loaded
         percent_loaded = (loaded / active_raw * 100.0) if active_raw else 100.0
         return DbStatus(
             active_raw=active_raw,
