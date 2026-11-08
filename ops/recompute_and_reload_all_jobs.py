@@ -14,7 +14,6 @@ DOPEJOBS_ROOT = Path("/Users/aburkard/fun/dopejobs")
 PIPELINE_ROOT = Path("/Users/aburkard/fun/dope-jobs-pipeline")
 ENV_PATH = DOPEJOBS_ROOT / ".env"
 MEILI_HOST = "http://127.0.0.1:17701"
-MEILI_KEY_FALLBACK = "b5ec361a9058eea40af00d05c2ef76e1cc9ba7be"
 BATCH_SIZE = 200
 RETRY_SLEEP_SECONDS = 5
 JOB_GROUP_PROGRESS_EVERY = 25
@@ -56,7 +55,7 @@ def main() -> int:
     from job_groups import recompute_job_groups_for_boards
     from pipeline import step_load
 
-    meili_key = os.environ.get("MEILISEARCH_MASTER_KEY") or MEILI_KEY_FALLBACK
+    meili_key = os.environ["MEILISEARCH_MASTER_KEY"]
 
     def get_boards_requiring_job_group_pass() -> list[tuple[str, str, int]]:
         conn = get_connection()
