@@ -15,4 +15,5 @@ Production search notes:
 - If the index gets mixed/corrupted, the safe repair is: delete `jobs`, then do a clean full reload from the production pipeline repo DB loader.
 - Internal background Meili traffic should use `https://search-internal.dopejobs.xyz`, not `search.dopejobs.xyz`.
 - `search-internal.dopejobs.xyz` is Cloudflare-proxied, protected by Cloudflare Access service-token headers, and origin-blocked for non-Cloudflare source IPs.
+- The embedder (`perplexity-embedder`, port 8087) must not be reachable from the internet: it proxies to OpenRouter with a paid key. A host iptables rule in `/etc/iptables/rules.v4` drops 8087 unless it arrives on `lo`; Meili still reaches it via `http://178.156.164.231:8087` because traffic to the box's own IP routes over `lo`. Keep that rule if you edit the firewall.
 - The Hetzner origin exempts Cloudflare IP ranges from the coarse `80/443` connection throttle. If internal access breaks, first verify Cloudflare Access headers and then refresh the Cloudflare IP allowlist on the origin.
