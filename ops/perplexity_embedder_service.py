@@ -7,6 +7,7 @@ import httpx
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 
 MODEL_ID = os.environ.get("PPLX_MODEL_ID", "perplexity/pplx-embed-v1-0.6b")
@@ -140,6 +141,7 @@ async def lifespan(_: FastAPI):
     global CLIENT
     CLIENT = httpx.AsyncClient(timeout=HTTP_TIMEOUT)
     await _warm_up_upstream(CLIENT)
+    _load_tiny()
     yield
     await CLIENT.aclose()
     CLIENT = None
@@ -301,6 +303,117 @@ async def openai_index_embed(request: Request) -> Response:
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    return _json_response(_openai_response(vectors))
+
+
+# ---------------------------------------------------------------------------
+# Tiny 256-d query encoder in the voyage-4 x P space (dopejobs-tiny-q256).
+# Search queries are embedded in-process with onnxruntime (no TEI hop); documents
+# are voyage-4-lite (input_type "document", native 1024-d) x P, L2-normalised.
+# Everything here is optional and isolated: if the model files or onnxruntime are
+# missing, only the /openai-*-tiny routes return 503; the pplx routes are unaffected.
+# ---------------------------------------------------------------------------
+TINY_DIR = os.environ.get("TINY_DIR", "/opt/dopejobs-tiny")
+TINY_DOC_MODEL = os.environ.get("TINY_DOC_MODEL", "mongodb/voyage-4-lite")
+TINY_THREADS = int(os.environ.get("TINY_THREADS", "4"))
+TINY_MAX_LEN = 32
+TINY_DIM = 256
+TINY: dict[str, Any] = {"error": "not loaded"}
+
+
+def _load_tiny() -> None:
+    try:
+        import onnxruntime as ort
+        from tokenizers import Tokenizer
+
+        tok = Tokenizer.from_file(f"{TINY_DIR}/dopejobs-tiny-q256/tokenizer.json")
+        tok.enable_truncation(TINY_MAX_LEN)
+        so = ort.SessionOptions()
+        so.intra_op_num_threads, so.inter_op_num_threads = TINY_THREADS, 1
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        sess = ort.InferenceSession(f"{TINY_DIR}/dopejobs-tiny-q256.onnx", so, providers=["CPUExecutionProvider"])
+        proj = np.load(f"{TINY_DIR}/proj_clean_voy4_1024_to_256.npy").astype(np.float32)
+        if proj.shape != (1024, TINY_DIM):
+            raise ValueError(f"unexpected projection shape {proj.shape}")
+        TINY.clear()
+        TINY.update(tok=tok, sess=sess, proj=proj)
+        _tiny_query_embeddings(["warmup"])
+    except Exception as exc:  # never take the proxy down because of the optional encoder
+        TINY.clear()
+        TINY["error"] = repr(exc)
+
+
+def _tiny_query_embeddings(inputs: list[str]) -> np.ndarray:
+    encs = TINY["tok"].encode_batch([t if t.strip() else "." for t in inputs])
+    n = max(len(e.ids) for e in encs)
+    ids = np.full((len(encs), n), 1, dtype=np.int64)  # <pad> = 1
+    mask = np.zeros_like(ids)
+    for i, e in enumerate(encs):
+        ids[i, : len(e.ids)] = e.ids
+        mask[i, : len(e.ids)] = 1
+    return TINY["sess"].run(None, {"input_ids": ids, "attention_mask": mask})[0].astype(np.float32)
+
+
+def _project_docs(raw: Any) -> np.ndarray:
+    x = np.asarray(raw, dtype=np.float32)
+    if x.ndim != 2 or x.shape[1] != 1024:
+        raise ValueError(f"expected 1024-d voyage vectors, got {x.shape}")
+    x /= np.maximum(np.linalg.norm(x, axis=1, keepdims=True), 1e-12)
+    y = x @ TINY["proj"]
+    y /= np.maximum(np.linalg.norm(y, axis=1, keepdims=True), 1e-12)
+    return y
+
+
+async def _fetch_tiny_index_embeddings(client: httpx.AsyncClient, inputs: list[str]) -> np.ndarray:
+    chunks: list[np.ndarray] = []
+    headers = _openrouter_headers()
+    for start in range(0, len(inputs), INDEX_UPSTREAM_BATCH_SIZE):
+        batch = inputs[start:start + INDEX_UPSTREAM_BATCH_SIZE]
+        payload = {"model": TINY_DOC_MODEL, "input": batch, "input_type": "document", "encoding_format": "float"}
+        resp = await client.post(OPENROUTER_URL, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json().get("data")
+        if not isinstance(data, list) or len(data) != len(batch):
+            raise ValueError("unexpected OpenRouter response shape")
+        data = sorted(data, key=lambda item: item.get("index", 0))
+        chunks.append(_project_docs([item.get("embedding") for item in data]))
+    return np.vstack(chunks) if chunks else np.empty((0, TINY_DIM), dtype=np.float32)
+
+
+@app.get("/health-tiny")
+def health_tiny() -> dict[str, Any]:
+    return {"ok": "sess" in TINY, "error": TINY.get("error"), "dir": TINY_DIR, "doc_model": TINY_DOC_MODEL,
+            "dimensions": TINY_DIM, "threads": TINY_THREADS}
+
+
+@app.post("/openai-search-tiny/v1/embeddings")
+async def openai_search_tiny(request: Request) -> Response:
+    if "sess" not in TINY:
+        raise HTTPException(status_code=503, detail=f"tiny encoder unavailable: {TINY.get('error')}")
+    payload = await _parse_request_json(request)
+    inputs = _coerce_inputs(payload.get("input", []))
+    if not inputs:
+        return _json_response(_openai_response(np.empty((0, TINY_DIM), dtype=np.float32)))
+    vectors = await run_in_threadpool(_tiny_query_embeddings, inputs)
+    return _json_response(_openai_response(vectors))
+
+
+@app.post("/openai-index-tiny/v1/embeddings")
+async def openai_index_tiny(request: Request) -> Response:
+    if CLIENT is None or "proj" not in TINY:
+        raise HTTPException(status_code=503, detail="proxy or tiny projection not ready")
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=503, detail="OpenRouter API key not configured")
+    payload = await _parse_request_json(request)
+    inputs = _coerce_inputs(payload.get("input", []))
+    if not inputs:
+        return _json_response(_openai_response(np.empty((0, TINY_DIM), dtype=np.float32)))
+    try:
+        vectors = await _fetch_tiny_index_embeddings(CLIENT, inputs)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"upstream error: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return _json_response(_openai_response(vectors))
 
 
