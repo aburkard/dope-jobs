@@ -1,4 +1,7 @@
+import asyncio
+import contextlib
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Any
@@ -26,6 +29,9 @@ OPENROUTER_HTTP_REFERER = os.environ.get("PPLX_OPENROUTER_HTTP_REFERER", "")
 OPENROUTER_X_TITLE = os.environ.get("PPLX_OPENROUTER_X_TITLE", "")
 
 CLIENT: httpx.AsyncClient | None = None
+LOG = logging.getLogger("uvicorn.error")
+# Last observed state of the TEI search upstream (only the pplx search routes use it).
+SEARCH_UPSTREAM: dict[str, Any] = {"ok": None, "error": "not checked yet"}
 
 
 class EmbedRequest(BaseModel):
@@ -69,20 +75,31 @@ def _post_process_embeddings(raw: Any) -> np.ndarray:
     return vectors
 
 
+def _mark_search_upstream(error: Exception | None) -> None:
+    SEARCH_UPSTREAM["ok"] = error is None
+    SEARCH_UPSTREAM["error"] = None if error is None else repr(error)
+
+
 async def _warm_up_upstream(client: httpx.AsyncClient) -> None:
+    # Best effort, run in the background: TEI only backs the pplx search routes, so a
+    # stopped or slow TEI must never delay or abort startup of the tiny routes.
     last_error: Exception | None = None
     for _ in range(STARTUP_RETRIES):
         try:
             warmup = await client.post(SEARCH_UPSTREAM_URL, json={"inputs": ["warmup"]})
             warmup.raise_for_status()
             _post_process_embeddings(warmup.json())
+            _mark_search_upstream(None)
             return
         except (httpx.HTTPError, ValueError) as exc:
             last_error = exc
-            import asyncio
-
             await asyncio.sleep(STARTUP_RETRY_SECONDS)
-    raise RuntimeError(f"failed to warm upstream embedder after retries: {last_error}") from last_error
+    _mark_search_upstream(last_error)
+    LOG.warning(
+        "TEI search upstream %s not reachable after %d tries (%r); pplx search routes return 503 "
+        "until it is up, tiny routes are unaffected",
+        SEARCH_UPSTREAM_URL, STARTUP_RETRIES, last_error,
+    )
 
 
 async def _fetch_search_embeddings(client: httpx.AsyncClient, inputs: list[str]) -> np.ndarray:
@@ -97,6 +114,26 @@ async def _fetch_search_embeddings(client: httpx.AsyncClient, inputs: list[str])
     if len(chunks) == 1:
         return chunks[0]
     return np.vstack(chunks)
+
+
+async def _search_vectors(inputs: list[str]) -> np.ndarray:
+    # TEI is optional: while it is stopped or unreachable the pplx search routes answer 503
+    # (not 502) and recover on the next request once it is back, with no proxy restart.
+    try:
+        vectors = await _fetch_search_embeddings(CLIENT, inputs)
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        _mark_search_upstream(exc)
+        raise HTTPException(
+            status_code=503,
+            detail=f"pplx search upstream (TEI) unreachable at {SEARCH_UPSTREAM_URL}: {exc!r}; "
+            "use /openai-search-tiny, which does not need TEI",
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"upstream error: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    _mark_search_upstream(None)
+    return vectors
 
 
 def _openrouter_headers() -> dict[str, str]:
@@ -140,9 +177,12 @@ async def _fetch_index_embeddings(client: httpx.AsyncClient, inputs: list[str]) 
 async def lifespan(_: FastAPI):
     global CLIENT
     CLIENT = httpx.AsyncClient(timeout=HTTP_TIMEOUT)
-    await _warm_up_upstream(CLIENT)
     _load_tiny()
+    warmup = asyncio.create_task(_warm_up_upstream(CLIENT))
     yield
+    warmup.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await warmup
     await CLIENT.aclose()
     CLIENT = None
 
@@ -157,6 +197,8 @@ def health() -> dict[str, Any]:
         "model": MODEL_ID,
         "search_upstream_url": SEARCH_UPSTREAM_URL,
         "search_upstream_batch_size": SEARCH_UPSTREAM_BATCH_SIZE,
+        "search_upstream_ok": SEARCH_UPSTREAM["ok"],
+        "search_upstream_error": SEARCH_UPSTREAM["error"],
         "index_upstream_url": OPENROUTER_URL,
         "index_upstream_batch_size": INDEX_UPSTREAM_BATCH_SIZE,
         "dimensions": EMBED_DIM,
@@ -229,12 +271,7 @@ async def search_embed(request: Request) -> Response:
     if not inputs:
         return _json_response(_standard_response(np.empty((0, EMBED_DIM), dtype=np.float32)))
 
-    try:
-        vectors = await _fetch_search_embeddings(CLIENT, inputs)
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"upstream error: {exc}") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    vectors = await _search_vectors(inputs)
 
     return _json_response(_standard_response(vectors))
 
@@ -275,12 +312,7 @@ async def openai_search_embed(request: Request) -> Response:
     if not inputs:
         return _json_response(_openai_response(np.empty((0, EMBED_DIM), dtype=np.float32)))
 
-    try:
-        vectors = await _fetch_search_embeddings(CLIENT, inputs)
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"upstream error: {exc}") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    vectors = await _search_vectors(inputs)
 
     return _json_response(_openai_response(vectors))
 
